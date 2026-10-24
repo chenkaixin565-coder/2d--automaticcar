@@ -1,0 +1,7 @@
+# AI / 机器学习扩展依赖（B 块：虚拟传感器故障模拟 + IsolationForest 异常检测）
+# 仅在启用机器学习异常检测时安装，不纳入基础镜像以保证“一键跑起来”足够轻量。
+# 安装方式：pip install -r requirements-ml.txt
+
+-r requirements.txt
+numpy==1.26.4
+scikit-learn==1.5.1

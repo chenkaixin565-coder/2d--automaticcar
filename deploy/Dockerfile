@@ -1,27 +1,30 @@
-# 智能巡检机器人二维仿真系统 V1.0 前端 Docker 构建
-# 作者：前端开发组
-# 日期：2026-10-23
-# 版本：V1.0
-#
-# 多阶段构建：
-#   Stage 1 使用 Node 镜像构建前端静态产物。
-#   Stage 2 使用 Nginx 镜像托管 dist/。
-# 后续接入 FastAPI 后端时，可将 Stage 2 替换为 python:3.11-slim
-# 并通过 FastAPI 的 StaticFiles 托管 dist/。
+# 智能巡检机器人二维仿真系统 —— 全栈单容器镜像
+# 多阶段构建：前端用 Node 构建静态产物，后端用 Python 托管并 serve 前端
+FROM node:20-alpine AS frontend
 
-FROM node:22-alpine AS builder
-
-WORKDIR /app
+WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-
 COPY frontend/ .
-RUN npm run build
+# 同源部署：前端由后端托管，构建期开启自动接入后端开关
+RUN VITE_BACKEND_SAME_ORIGIN=true npm run build
 
-FROM nginx:alpine
+FROM python:3.11-slim AS backend
 
-COPY --from=builder /app/dist /usr/share/nginx/html
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
-EXPOSE 80
+WORKDIR /app
 
-CMD ["nginx", "-g", "daemon off;"]
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ ./backend/
+COPY --from=frontend /frontend/dist ./backend/static/dist
+
+WORKDIR /app/backend
+EXPOSE 8000
+
+# 端口（PORT）与仿真 tick 速率（TICK_INTERVAL_MS）可通过环境变量覆盖
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

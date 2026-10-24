@@ -1,0 +1,14 @@
+# 减小 Docker 构建上下文体积，避免无关文件进镜像
+node_modules
+frontend/node_modules
+frontend/dist
+backend/static/dist
+backend/__pycache__
+backend/.pytest_cache
+backend/logs
+.git
+.github
+backups
+deploy-netlify.zip
+project.zip
+*.log

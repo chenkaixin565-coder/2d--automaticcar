@@ -1,16 +1,17 @@
-# 智能巡检机器人二维仿真系统 V1.0 前端本地运行
-# 作者：前端开发组
-# 日期：2026-10-23
-# 版本：V1.0
-#
-# 本阶段仅部署前端静态页面。后续接入 FastAPI 后端时，
-# 可在此文件中增加 backend 服务并共享网络。
-
+# 智能巡检机器人二维仿真系统 —— 单容器编排
+# 用法：docker compose up 后浏览器访问 http://localhost:8000
+# 自定义端口/速率：PORT=9000 TICK_INTERVAL_MS=100 docker compose up
 services:
-  frontend:
+  app:
     build:
-      context: ..
+      context: ..            # 仓库根目录（含 frontend/ 与 backend/）
       dockerfile: deploy/Dockerfile
+    image: irm-system:1.0
     ports:
-      - "8080:80"
+      - "${PORT:-8000}:${PORT:-8000}"
+    environment:
+      - PORT=${PORT:-8000}
+      - TICK_INTERVAL_MS=${TICK_INTERVAL_MS:-200}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOW_BATTERY_THRESHOLD=${LOW_BATTERY_THRESHOLD:-20}
     restart: unless-stopped

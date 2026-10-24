@@ -5,14 +5,16 @@
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
         <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V1.0</span>
-        <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">离线仿真</span>
+        <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
     </header>
 
     <!-- 状态横幅 -->
-    <div class="shrink-0 px-4 py-1 text-[10px] md:text-xs text-center bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border-b border-blue-100 dark:border-blue-900/40">
-      仿真模式（本地）：所有逻辑运行在浏览器中，无外部网络请求
+    <div
+      class="shrink-0 px-4 py-1 text-[10px] md:text-xs text-center border-b bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border-blue-100 dark:border-blue-900/40"
+    >
+      {{ bannerText }}
     </div>
 
     <!-- 主体布局 -->
@@ -171,7 +173,7 @@
  */
 
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import { SimulatedService } from './services/index.js'
+import { createRobotService } from './services/index.js'
 import ThemeToggle from './components/ThemeToggle.vue'
 import MapCanvas from './components/MapCanvas.vue'
 import ControlPanel from './components/ControlPanel.vue'
@@ -183,8 +185,25 @@ import MobileControls from './components/MobileControls.vue'
 
 const SETTINGS_KEY = 'irm_settings_v1'
 
-// 初始化数据服务层
-const service = new SimulatedService()
+// 数据源展示标签：后端连接成功显示"后端服务"，否则"离线仿真"
+const dataModeLabel = computed(() => (usingBackend.value ? '后端服务' : '离线仿真'))
+
+const bannerText = computed(() => {
+  if (usingBackend.value) {
+    return backendConnected.value
+      ? '已接入后端仿真服务（FastAPI）：数据来自服务器'
+      : '正在连接后端仿真服务，连接失败时请检查后端地址'
+  }
+  return '仿真模式（本地）：所有逻辑运行在浏览器中，无外部网络请求'
+})
+
+// 后端连接状态（仅 RemoteService 相关）
+const backendConnected = ref(false)
+
+// 初始化数据服务层：默认离线仿真；URL 带 ?backend= 时自动接入 FastAPI 后端。
+// 界面组件无需感知数据来源，切换对组件透明（设计红线）。
+const service = createRobotService()
+const usingBackend = ref(!!service.isRemote)
 const map = reactive(service.getMap())
 service.updateMap(map)
 
@@ -256,10 +275,15 @@ onMounted(() => {
       anomalies.value = service.getAnomalies()
       addToast(frame.data.type, frame.data.message)
     } else if (frame.type === 'notice') {
-      if (frame.data.message && frame.data.message.includes('已完成')) {
+      const msg = frame.data && frame.data.message ? frame.data.message : ''
+      if (usingBackend.value) {
+        if (msg.includes('已连接到后端')) backendConnected.value = true
+        if (msg.includes('断开')) backendConnected.value = false
+      }
+      if (msg.includes('已完成')) {
         snapshots.value = service.getSnapshots()
       }
-      addToast('notice', frame.data.message)
+      addToast('notice', msg)
     }
   })
 })

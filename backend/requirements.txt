@@ -1,0 +1,8 @@
+# 智能巡检机器人二维仿真系统 V1.0 —— 后端核心依赖
+# 技术栈：Python 3.11 + FastAPI + Uvicorn
+# 仅含“一键跑起来”必需的标准轻量依赖；AI/机器学习相关重依赖见 requirements-ml.txt（B 块实现后启用）。
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart==0.0.9

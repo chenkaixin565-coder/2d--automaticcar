@@ -1,0 +1,26 @@
+# 依赖与构建产物
+node_modules/
+frontend/dist/
+backend/static/dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本地回退快照（非源码，手动保管）
+backups/
+
+# 后端运行时日志
+backend/logs/
+
+# 开发/验证临时脚本
+frontend/_shot.mjs
+frontend/_verify.mjs
+
+# 工作区配置
+.cloudstudio
+
+# 系统/编辑器
+.DS_Store
+.idea/
+.vscode/
