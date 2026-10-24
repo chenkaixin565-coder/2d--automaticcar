@@ -12,6 +12,7 @@
 import { RobotService } from './robotService.js'
 import { astar } from './astar.js'
 import { MAP_PRESETS, getPreset } from './mapPresets.js'
+import { enforceBorder, isBoundaryCell } from '../utils/mapBoundary.js'
 
 /** 仿真 tick 间隔，单位毫秒，与后端 WebSocket 推送频率一致。 */
 const TICK_MS = 200
@@ -633,6 +634,8 @@ export class SimulatedService extends RobotService {
    * @param {Object} map - 完整地图对象。
    */
   updateMap(map) {
+    // 真正的边界：任何地图更新都强制补齐四周边界墙
+    enforceBorder(map.grid, map.width, map.height)
     this._map = map
     this._presetKey = null
     this._saveMap()
@@ -649,6 +652,8 @@ export class SimulatedService extends RobotService {
       this._emitEvent('notice', { message: '未找到该内置地图' })
       return
     }
+    // 真正的边界：预设同样强制补齐边界墙
+    enforceBorder(presetMap.grid, presetMap.width, presetMap.height)
     this._map = presetMap
     this._presetKey = key
     this._saveMap()
@@ -732,6 +737,16 @@ export class SimulatedService extends RobotService {
       target[1] >= 0 && target[1] < this._map.height &&
       this._map.grid[target[1]][target[0]] === 1
     ) {
+      if (isBoundaryCell(target[0], target[1], this._map.width, this._map.height)) {
+        // 边界墙不可清除：仅恢复控制权，提示用户转向脱离
+        this._state.mode = 'manual'
+        this._state.path = []
+        this._updateSensors()
+        this._recordSnapshot()
+        this._emitState()
+        this._emitEvent('notice', { message: '前方是固定边界墙，无法清除；请向其他方向移动脱离' })
+        return
+      }
       this._map.grid[target[1]][target[0]] = 0
       this._saveMap()
     }

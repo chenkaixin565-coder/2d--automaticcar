@@ -33,6 +33,7 @@
  */
 
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { isBoundaryCell } from '../utils/mapBoundary.js'
 
 /** 每个栅格的显示边长（像素）。 */
 const CELL_PIXELS = 40
@@ -90,6 +91,9 @@ const isPanning = ref(false)
 const isPainting = ref(false)
 const paintValue = ref(0)
 const lastPaintCell = ref(null)
+// 边界格涂抹被拒时的红色闪烁反馈 { x, y, until }
+const rejectCell = ref(null)
+let rejectTimer = null
 const panStart = ref({ x: 0, y: 0 })
 const viewOffsetStart = ref({ x: 0, y: 0 })
 const pinchStart = ref(null)
@@ -122,6 +126,7 @@ onUnmounted(() => {
   if (shakeTimer) {
     clearTimeout(shakeTimer)
   }
+  clearTimeout(rejectTimer)
 })
 
 watch(
@@ -252,6 +257,7 @@ function render() {
   drawGrid(ctx)
   drawSpecialCells(ctx)
   drawObstacles(ctx)
+  drawRejectFlash(ctx)
 
   const snapshot = props.playbackSnapshot
   if (snapshot) {
@@ -325,18 +331,68 @@ function drawMarker(ctx, pos, color, label) {
 }
 
 /**
- * 绘制障碍物。
+ * 绘制障碍物：普通障碍为灰色块，最外环边界墙用深色 + 斜线纹理
+ * 明确区分“真正的边界”（不可编辑、不可清除、机器人不可穿越）。
  */
 function drawObstacles(ctx) {
   const grid = props.map.grid
-  ctx.fillStyle = props.isDark ? '#4b5563' : '#374151'
-  for (let y = 0; y < props.map.height; y += 1) {
-    for (let x = 0; x < props.map.width; x += 1) {
-      if (grid[y][x] === 1) {
-        ctx.fillRect(x * CELL_PIXELS, y * CELL_PIXELS, CELL_PIXELS, CELL_PIXELS)
+  const width = props.map.width
+  const height = props.map.height
+  const normalColor = props.isDark ? '#4b5563' : '#374151'
+  const boundaryColor = props.isDark ? '#020617' : '#0f172a'
+  const hatchColor = props.isDark ? '#1e293b' : '#334155'
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (grid[y][x] !== 1) continue
+      const px = x * CELL_PIXELS
+      const py = y * CELL_PIXELS
+      if (isBoundaryCell(x, y, width, height)) {
+        // 边界墙：深色底 + 两条斜线，视觉上与普通障碍明显区分
+        ctx.fillStyle = boundaryColor
+        ctx.fillRect(px, py, CELL_PIXELS, CELL_PIXELS)
+        ctx.strokeStyle = hatchColor
+        ctx.lineWidth = 2 / props.scale
+        ctx.beginPath()
+        ctx.moveTo(px, py)
+        ctx.lineTo(px + CELL_PIXELS, py + CELL_PIXELS)
+        ctx.moveTo(px + CELL_PIXELS, py)
+        ctx.lineTo(px, py + CELL_PIXELS)
+        ctx.stroke()
+      } else {
+        ctx.fillStyle = normalColor
+        ctx.fillRect(px, py, CELL_PIXELS, CELL_PIXELS)
       }
     }
   }
+}
+
+/**
+ * 绘制边界格涂抹被拒的红色闪烁反馈。
+ */
+function drawRejectFlash(ctx) {
+  const cell = rejectCell.value
+  if (!cell || Date.now() > cell.until) return
+  const px = cell.x * CELL_PIXELS
+  const py = cell.y * CELL_PIXELS
+  ctx.fillStyle = 'rgba(239, 68, 68, 0.35)'
+  ctx.fillRect(px, py, CELL_PIXELS, CELL_PIXELS)
+  ctx.strokeStyle = '#ef4444'
+  ctx.lineWidth = 2 / props.scale
+  ctx.strokeRect(px, py, CELL_PIXELS, CELL_PIXELS)
+}
+
+/**
+ * 触发边界格涂抹被拒的闪烁反馈（400ms 后自动清除并重绘）。
+ */
+function flashRejectCell(x, y) {
+  rejectCell.value = { x, y, until: Date.now() + 400 }
+  render()
+  clearTimeout(rejectTimer)
+  rejectTimer = setTimeout(() => {
+    rejectCell.value = null
+    render()
+  }, 400)
 }
 
 /**
@@ -500,6 +556,11 @@ function handleMouseDown(event) {
       isPainting.value = true
       paintValue.value = props.map.grid[cell[1]][cell[0]] === 1 ? 0 : 1
       lastPaintCell.value = `${cell[0]},${cell[1]}`
+      // 真正的边界：最外环不可绘制/擦除，闪现红色拒绝反馈
+      if (isBoundaryCell(cell[0], cell[1], props.map.width, props.map.height)) {
+        flashRejectCell(cell[0], cell[1])
+        return
+      }
       emit('edit-obstacle', { x: cell[0], y: cell[1], value: paintValue.value })
     }
   } else if (props.editMode === 'goal') {
@@ -545,6 +606,11 @@ function handleMouseMove(event) {
     const key = `${cell[0]},${cell[1]}`
     if (inBounds(cell) && key !== lastPaintCell.value) {
       lastPaintCell.value = key
+      // 真正的边界：最外环不可绘制/擦除，闪现红色拒绝反馈
+      if (isBoundaryCell(cell[0], cell[1], props.map.width, props.map.height)) {
+        flashRejectCell(cell[0], cell[1])
+        return
+      }
       emit('edit-obstacle', { x: cell[0], y: cell[1], value: paintValue.value })
     }
   }

@@ -7,12 +7,18 @@
 版本：V1.0
 """
 
+import math
+
 from app.core.constants import MODE_BLOCKED, MODE_MANUAL, MODE_PATROL
 from app.services.simulation_engine import SimulationEngine
 
 
 def make_engine() -> SimulationEngine:
-    """构造带小型自定义地图的引擎，便于确定性断言。"""
+    """构造带小型自定义地图的引擎，便于确定性断言。
+
+    注意：真正的边界不可穿越，起点/充电点/巡检点必须位于边界环内侧；
+    提交后四周边界墙会被 GridMap 校验器强制补齐。
+    """
     engine = SimulationEngine()
     engine.update_map(
         {
@@ -25,9 +31,9 @@ def make_engine() -> SimulationEngine:
                 [0, 1, 0, 1, 0],
                 [0, 0, 0, 0, 0],
             ],
-            "start": [0, 0],
-            "goals": [[4, 4]],
-            "charge_point": [0, 0],
+            "start": [1, 2],
+            "goals": [[3, 2]],
+            "charge_point": [2, 3],
         }
     )
     return engine
@@ -37,15 +43,14 @@ def test_move_free_cell():
     """向空格移动应更新坐标。"""
     engine = make_engine()
     engine.move(1, 0)
-    assert engine.x == 1 and engine.y == 0
+    assert engine.x == 2 and engine.y == 2
 
 
 def test_move_into_obstacle_sets_blocked():
     """撞上障碍物应保持原位且 mode 置为 blocked。"""
     engine = make_engine()
-    engine.move(0, 1)  # 先下移到 (0,1)
-    engine.move(1, 0)  # 撞向 (1,1) 的障碍
-    assert engine.x == 0 and engine.y == 1
+    engine.move(0, 1)  # 下移目标是 (1,3) 的障碍
+    assert engine.x == 1 and engine.y == 2
     assert engine.mode == MODE_BLOCKED
 
 
@@ -63,7 +68,7 @@ def test_battery_consumption():
 def test_patrol_reaches_goal():
     """巡检应沿 A* 路径推进并最终到达目标。"""
     engine = make_engine()
-    engine.start_patrol([[4, 4]])
+    engine.start_patrol([[3, 2]])
     assert engine.patrol.running
     assert engine.mode == MODE_PATROL
     # 路径长度最多 8 步，推进 20 个 tick 必然完成。
@@ -71,7 +76,7 @@ def test_patrol_reaches_goal():
         if not engine.patrol.running:
             break
         engine.tick()
-    assert (engine.x, engine.y) == (4, 4)
+    assert (engine.x, engine.y) == (3, 2)
     assert not engine.patrol.running
 
 
@@ -98,6 +103,56 @@ def test_reset_restores_state():
     engine = make_engine()
     engine.move(1, 0)
     engine.reset()
-    assert (engine.x, engine.y) == (0, 0)
+    assert (engine.x, engine.y) == (1, 2)
     assert engine.battery == 100.0
     assert engine.mode == MODE_MANUAL
+
+
+# ---------- 真正的边界：不可编辑 / 不可清除 / 不可穿越 ----------
+
+
+def test_update_map_enforces_border():
+    """update_map 应强制补齐四周边界墙，即使提交的网格没有边界。"""
+    engine = make_engine()
+    engine.update_map(
+        {
+            "width": 5,
+            "height": 5,
+            "grid": [[0] * 5 for _ in range(5)],
+            "start": [2, 2],
+            "goals": [],
+            "charge_point": [2, 2],
+        }
+    )
+    grid = engine.map.grid
+    assert grid[0] == [1] * 5
+    assert grid[4] == [1] * 5
+    assert all(row[0] == 1 and row[4] == 1 for row in grid)
+    assert grid[2][2] == 0  # 内部不受影响
+
+
+def test_robot_cannot_leave_map():
+    """机器人永远无法穿越边界：越界目标即 blocked 且位置不变。"""
+    engine = make_engine()
+    engine.move(-1, 0)  # 目标 (0,2) 是边界墙
+    assert engine.mode == MODE_BLOCKED
+    assert (engine.x, engine.y) == (1, 2)
+
+
+def test_resolve_fault_keeps_boundary_wall():
+    """一键排障不能清除边界墙，仅恢复控制权。"""
+    engine = make_engine()
+    engine.move(-1, 0)  # 撞上左边界墙 (0,2)
+    assert engine.mode == MODE_BLOCKED
+    engine.theta = math.pi  # blocked 时不改朝向，手动面向 -x 正对边界
+    frame = engine.resolve_fault()
+    assert engine.mode == MODE_MANUAL
+    assert engine.map.grid[2][0] == 1  # 边界墙仍在
+    assert "边界" in frame["data"]["message"]
+
+
+def test_remove_obstacle_refuses_boundary():
+    """remove_obstacle 应拒绝拆除边界墙。"""
+    engine = make_engine()
+    engine.remove_obstacle([0, 2])
+    assert engine.map.grid[2][0] == 1

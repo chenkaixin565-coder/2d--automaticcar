@@ -51,13 +51,14 @@ def _default_map(width: int, height: int) -> GridMap:
     for x, y in walls:
         if 0 <= x < width and 0 <= y < height:
             grid[y][x] = CELL_OBSTACLE
+    # 真正的边界：最外环由 GridMap 校验器强制为墙，起点/充电点/巡检点一律放内侧
     return GridMap(
         width=width,
         height=height,
         grid=grid,
-        start=(0, 0),
-        goals=[[width - 1, height - 1], [width // 2, height // 2]],
-        charge_point=(0, 0),
+        start=(1, 1),
+        goals=[[width - 2, height - 2], [width // 2, height // 2]],
+        charge_point=(1, height - 2),
     )
 
 
@@ -226,11 +227,16 @@ class SimulationEngine:
         """
         拆除指定障碍格并重算当前巡检路径。
 
+        真正的边界：最外环边界墙不可拆除，拒绝后原样返回地图。
+
         :param cell: 障碍坐标 [x, y]。
         :return: 更新后的地图字典。
         """
         cell_x, cell_y = cell
         if self.map.in_bounds(cell_x, cell_y):
+            if self.map.is_boundary(cell_x, cell_y):
+                logger.info("障碍 (%d, %d) 是边界墙，拒绝拆除", cell_x, cell_y)
+                return self.map.model_dump()
             self.map.grid[cell_y][cell_x] = 0
             logger.info("障碍 (%d, %d) 已拆除", cell_x, cell_y)
         return self.map.model_dump()
@@ -252,6 +258,14 @@ class SimulationEngine:
         dx, dy = self._theta_to_step(self.theta)
         target = (self.x + dx, self.y + dy)
         if self.map.in_bounds(*target) and self.map.grid[target[1]][target[0]] == CELL_OBSTACLE:
+            if self.map.is_boundary(*target):
+                # 边界墙不可清除：仅恢复控制权，提示用户转向脱离
+                message = "前方是固定边界墙，无法清除；请向其他方向移动脱离"
+                logger.info("一键排障：前方为边界墙 (%d, %d)，不清除", *target)
+                self.mode = MODE_MANUAL
+                self.path = []
+                self._emit_notice(message)
+                return {"type": "notice", "data": {"message": message}}
             self.map.grid[target[1]][target[0]] = 0
             logger.info("一键排障：拆除前方障碍 (%d, %d)", *target)
         self.mode = MODE_MANUAL

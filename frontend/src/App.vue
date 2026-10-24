@@ -17,6 +17,24 @@
       {{ bannerText }}
     </div>
 
+    <!-- 新告警 Toast：移动端为文档流内布局（夹在横幅与地图之间，绝不遮挡地图）；
+         桌面端悬浮右上角（仪表盘常规模式） -->
+    <div
+      class="shrink-0 px-2 pt-1.5 flex flex-col gap-1.5 pointer-events-none md:fixed md:top-14 md:right-3 md:z-50 md:px-0 md:pt-0"
+    >
+      <TransitionGroup name="toast">
+        <div
+          v-for="toast in toasts"
+          :key="toast.id"
+          class="pointer-events-auto max-w-full md:max-w-xs px-3 md:px-4 py-2 md:py-3 rounded-lg shadow-lg border-l-4 text-xs md:text-sm bg-white dark:bg-gray-900"
+          :class="toastClass(toast.type)"
+        >
+          <div class="font-medium">{{ toast.title }}</div>
+          <div class="text-gray-600 dark:text-gray-300">{{ toast.message }}</div>
+        </div>
+      </TransitionGroup>
+    </div>
+
     <!-- 主体布局 -->
     <main class="flex-1 relative flex flex-col md:flex-row overflow-hidden">
       <!-- 地图区域 -->
@@ -162,21 +180,6 @@
         </div>
       </div>
     </main>
-
-    <!-- 新告警 Toast -->
-    <div class="fixed top-14 right-3 z-50 flex flex-col gap-2 pointer-events-none">
-      <TransitionGroup name="toast">
-        <div
-          v-for="toast in toasts"
-          :key="toast.id"
-          class="pointer-events-auto max-w-xs px-4 py-3 rounded-lg shadow-lg border-l-4 text-sm bg-white dark:bg-gray-900"
-          :class="toastClass(toast.type)"
-        >
-          <div class="font-medium">{{ toast.title }}</div>
-          <div class="text-gray-600 dark:text-gray-300">{{ toast.message }}</div>
-        </div>
-      </TransitionGroup>
-    </div>
   </div>
 </template>
 
@@ -194,6 +197,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { createRobotService } from './services/index.js'
 import { exportMap } from './utils/mapIO.js'
+import { isBoundaryCell } from './utils/mapBoundary.js'
 import { getAvatar, setAvatar, clearAvatar } from './utils/robotAvatar.js'
 import ThemeToggle from './components/ThemeToggle.vue'
 import MapCanvas from './components/MapCanvas.vue'
@@ -296,6 +300,9 @@ let toastId = 0
 // 这里按类型记录上次弹出时间，非系统提示类至少间隔 TOAST_COOLDOWN_MS 才再弹。
 const TOAST_COOLDOWN_MS = 5000
 const toastCooldowns = new Map()
+
+// 边界墙编辑被拒提示的节流时间戳（涂抹边界时按 5 秒间隔提示一次）
+let lastBoundaryNotice = 0
 
 let unsubscribeState = null
 let unsubscribeEvent = null
@@ -523,6 +530,15 @@ function markMapCustom() {
 
 function onEditObstacle({ x, y, value }) {
   if (x < 0 || x >= map.width || y < 0 || y >= map.height) return
+  // 真正的边界：最外环不可绘制也不可擦除
+  if (isBoundaryCell(x, y, map.width, map.height)) {
+    const now = Date.now()
+    if (now - lastBoundaryNotice > 5000) {
+      lastBoundaryNotice = now
+      addToast('notice', '地图外围是固定边界墙：不可绘制、不可擦除，机器人也无法穿越')
+    }
+    return
+  }
   map.grid[y][x] = value
   markMapCustom()
   service.updateMap(map)
@@ -707,6 +723,11 @@ function addToast(type, message) {
   }
   const id = toastId++
   toasts.value.push({ id, type, title: toastTitles[type] || type, message })
+  // 最多同时显示 2 条，超出丢弃最旧，避免堆叠遮挡地图/面板
+  const MAX_VISIBLE_TOASTS = 2
+  if (toasts.value.length > MAX_VISIBLE_TOASTS) {
+    toasts.value.splice(0, toasts.value.length - MAX_VISIBLE_TOASTS)
+  }
   setTimeout(() => {
     toasts.value = toasts.value.filter((t) => t.id !== id)
   }, 4000)

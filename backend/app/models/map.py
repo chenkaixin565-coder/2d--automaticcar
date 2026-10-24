@@ -9,7 +9,10 @@
 版本：V1.0
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# 边界墙单元格取值（与普通障碍一致，但语义上不可编辑、不可清除）
+CELL_BOUNDARY = 1
 
 
 class GridMap(BaseModel):
@@ -43,6 +46,25 @@ class GridMap(BaseModel):
                     raise ValueError("栅格取值只能为 0 或 1")
         return value
 
+    @model_validator(mode="after")
+    def enforce_boundary(self) -> "GridMap":
+        """
+        强制四周边界墙。
+
+        地图最外环是真正的边界：不可编辑、不可清除、机器人不可穿越。
+        任何来源的地图（REST 导入、WebSocket 更新、默认值）在模型校验
+        阶段都会被补齐边界墙，保证该不变量始终成立。
+
+        :return: 补齐边界墙后的自身。
+        """
+        for x in range(self.width):
+            self.grid[0][x] = CELL_BOUNDARY
+            self.grid[self.height - 1][x] = CELL_BOUNDARY
+        for y in range(self.height):
+            self.grid[y][0] = CELL_BOUNDARY
+            self.grid[y][self.width - 1] = CELL_BOUNDARY
+        return self
+
     def in_bounds(self, x: int, y: int) -> bool:
         """
         判断坐标是否越界。
@@ -52,6 +74,16 @@ class GridMap(BaseModel):
         :return: 在地图范围内返回 True，否则 False。
         """
         return 0 <= x < self.width and 0 <= y < self.height
+
+    def is_boundary(self, x: int, y: int) -> bool:
+        """
+        判断坐标是否为边界墙单元格（最外环）。
+
+        :param x: 列坐标。
+        :param y: 行坐标。
+        :return: 位于最外环返回 True，否则 False。
+        """
+        return x == 0 or y == 0 or x == self.width - 1 or y == self.height - 1
 
     def is_free(self, x: int, y: int) -> bool:
         """

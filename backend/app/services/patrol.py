@@ -63,6 +63,9 @@ def find_min_obstacle_to_remove(
         for x in range(width):
             if grid[y][x] != CELL_OBSTACLE:
                 continue
+            # 真正的边界：最外环边界墙不可拆除，直接跳过
+            if x == 0 or y == 0 or x == width - 1 or y == height - 1:
+                continue
             # 临时拆除该障碍并试算路径。
             grid[y][x] = 0
             result = astar(grid, start, goal)

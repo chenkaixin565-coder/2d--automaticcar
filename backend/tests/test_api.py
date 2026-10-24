@@ -37,20 +37,24 @@ def test_get_map_contract():
 
 
 def test_put_map_roundtrip():
-    """PUT /map 提交后应能 GET 到相同数据。"""
+    """PUT /map 提交后应能 GET 到相同数据，且四周边界墙被强制补齐。"""
     new_map = {
-        "width": 4,
-        "height": 4,
-        "grid": [[0] * 4 for _ in range(4)],
-        "start": [0, 0],
-        "goals": [[3, 3]],
-        "charge_point": [0, 0],
+        "width": 6,
+        "height": 6,
+        "grid": [[0] * 6 for _ in range(6)],
+        "start": [1, 1],
+        "goals": [[4, 4]],
+        "charge_point": [1, 4],
     }
     put = client.put("/api/v1/map", json=new_map)
     assert put.status_code == 200
     got = client.get("/api/v1/map").json()
-    assert got["width"] == 4
-    assert got["grid"] == new_map["grid"]
+    assert got["width"] == 6
+    assert got["grid"][2][2] == 0  # 内部区域保持原样
+    # 真正的边界：四周边界墙被强制补齐
+    assert got["grid"][0] == [1] * 6
+    assert got["grid"][5] == [1] * 6
+    assert all(row[0] == 1 and row[5] == 1 for row in got["grid"])
 
 
 def test_move_endpoint():
@@ -64,11 +68,12 @@ def test_move_endpoint():
 
 def test_path_endpoint():
     """GET /path 应返回 A* 结果三元组。"""
-    response = client.get("/api/v1/path", params={"start": "0,0", "goal": "3,3"})
+    # 起点/终点均在边界环内侧（真正的边界不可穿越）
+    response = client.get("/api/v1/path", params={"start": "1,1", "goal": "3,3"})
     assert response.status_code == 200
     data = response.json()
     assert set(data.keys()) == {"path", "visited_count", "cost"}
-    assert data["path"][0] == [0, 0]
+    assert data["path"][0] == [1, 1]
     assert data["path"][-1] == [3, 3]
 
 
@@ -98,17 +103,30 @@ def test_sensors_and_anomalies():
 
 def test_remove_obstacle_endpoint():
     """一键排障接口应能找到建议拆除的障碍。"""
-    # 构造被单格障碍阻断的地图。
-    grid = [[0] * 3 for _ in range(3)]
-    grid[0][1] = 1
-    grid[1][1] = 1
-    grid[2][1] = 1
+    # 构造被单格障碍阻断的地图：起点 [1,2] 右侧墙壁挡路，拆 (2,2) 后直达目标。
+    grid = [[0] * 5 for _ in range(5)]
+    grid[2][2] = 1
     client.put(
         "/api/v1/map",
-        json={"width": 3, "height": 3, "grid": grid, "start": [0, 0], "goals": [], "charge_point": [0, 0]},
+        json={"width": 5, "height": 5, "grid": grid, "start": [1, 2], "goals": [], "charge_point": [1, 2]},
     )
-    response = client.post("/api/v1/map/remove-obstacle", json=[2, 0])
+    response = client.post("/api/v1/map/remove-obstacle", json=[3, 2])
     assert response.status_code == 200
     data = response.json()
     assert data["remove"] is not None
-    assert data["remove"][0] == 1  # 应建议拆除中间那列障碍之一。
+    assert data["remove"] == [2, 2]  # 应建议拆除挡路的单格障碍。
+
+
+def test_remove_obstacle_never_suggests_boundary():
+    """一键排障建议永不应是边界墙（真正的边界不可拆除）。"""
+    grid = [[0] * 5 for _ in range(5)]
+    client.put(
+        "/api/v1/map",
+        json={"width": 5, "height": 5, "grid": grid, "start": [1, 1], "goals": [], "charge_point": [1, 1]},
+    )
+    response = client.post("/api/v1/map/remove-obstacle", json=[3, 3])
+    assert response.status_code == 200
+    data = response.json()
+    if data["remove"] is not None:
+        x, y = data["remove"]
+        assert not (x == 0 or y == 0 or x == 4 or y == 4)

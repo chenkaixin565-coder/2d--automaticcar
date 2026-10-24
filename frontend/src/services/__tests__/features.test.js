@@ -62,6 +62,88 @@ describe('一键排障 resolveFault', () => {
 
     service.resolveFault()
     expect(service._state.mode).toBe('manual')
+    // 边界墙不可清除：排障后仍是墙
+    expect(service._map.grid[0][1]).toBe(1)
+  })
+})
+
+describe('真正的边界（不可编辑 / 不可清除 / 不可穿越）', () => {
+  let service
+
+  beforeEach(() => {
+    localStorage.clear()
+    service = new SimulatedService()
+    service._stopLoop()
+  })
+
+  afterEach(() => {
+    service._stopLoop()
+    localStorage.clear()
+  })
+
+  it('所有内置预设的四周边界都是墙', () => {
+    for (const preset of MAP_PRESETS) {
+      const { width, height, grid } = preset
+      for (let x = 0; x < width; x += 1) {
+        expect(grid[0][x]).toBe(1)
+        expect(grid[height - 1][x]).toBe(1)
+      }
+      for (let y = 0; y < height; y += 1) {
+        expect(grid[y][0]).toBe(1)
+        expect(grid[y][width - 1]).toBe(1)
+      }
+    }
+  })
+
+  it('updateMap 应强制补齐被擦除的边界墙', () => {
+    const map = getPreset('factory')
+    map.grid[0][5] = 0 // 擦掉一段上边界
+    map.grid[10][0] = 0 // 擦掉一段左边界
+    service.updateMap(map)
+    expect(service._map.grid[0][5]).toBe(1)
+    expect(service._map.grid[10][0]).toBe(1)
+  })
+
+  it('机器人永远无法移动到边界格外（越界即 blocked）', () => {
+    service._state.x = 1
+    service._state.y = 1
+    service._state.theta = -Math.PI / 2
+    service.move(0, -1)
+    expect(service._state.mode).toBe('blocked')
+    expect(service._state.y).toBe(1) // 位置不变
+  })
+
+  it('validateMap 应强制补齐导入地图的边界墙', () => {
+    const map = {
+      width: 8,
+      height: 6,
+      grid: Array.from({ length: 6 }, () => Array(8).fill(0)),
+      start: [2, 2],
+      goals: [[5, 4]],
+      charge_point: [3, 3],
+    }
+    const result = validateMap(map)
+    expect(result.ok).toBe(true)
+    expect(result.map.grid[0][0]).toBe(1)
+    expect(result.map.grid[0][3]).toBe(1)
+    expect(result.map.grid[5][7]).toBe(1)
+    expect(result.map.grid[2][0]).toBe(1)
+  })
+
+  it('validateMap 应拒绝起点 / 巡检点 / 充电点位于边界环', () => {
+    const base = () => ({
+      width: 8,
+      height: 6,
+      grid: Array.from({ length: 6 }, () => Array(8).fill(0)),
+      start: [2, 2],
+      goals: [[5, 4]],
+      charge_point: [3, 3],
+    })
+    const startOnBorder = validateMap({ ...base(), start: [0, 2] })
+    expect(startOnBorder.ok).toBe(false)
+    expect(startOnBorder.error).toContain('边界')
+    expect(validateMap({ ...base(), goals: [[4, 0]] }).ok).toBe(false)
+    expect(validateMap({ ...base(), charge_point: [7, 3] }).ok).toBe(false)
   })
 })
 

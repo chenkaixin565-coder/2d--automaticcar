@@ -6,7 +6,10 @@
  *
  * 地图文件为 JSON 对象：{ width, height, grid, start, goals, charge_point }。
  * 导入时必须做完整结构校验，防止脏数据把仿真引擎带崩（防御式编程）。
+ * 真正的边界：导入时强制补齐四周边界墙，且起点/充电点/巡检点不得位于边界环。
  */
+
+import { enforceBorder, isBoundaryCell } from './mapBoundary.js'
 
 /** 地图宽高合法范围。 */
 const MIN_SIZE = 5
@@ -71,6 +74,23 @@ export function validateMap(map) {
       return { ok: false, error: `巡检点 [${goal[0]}, ${goal[1]}] 位于障碍格上` }
     }
   }
+
+  // 真正的边界：关键点不得落在边界环上（边界墙不可通行、不可编辑）
+  const onBoundary = (p) => isBoundaryCell(p[0], p[1], width, height)
+  if (onBoundary(start)) {
+    return { ok: false, error: '起点不能位于地图边界上（边界墙不可通行）' }
+  }
+  if (onBoundary(chargePoint)) {
+    return { ok: false, error: '充电点不能位于地图边界上（边界墙不可通行）' }
+  }
+  for (const goal of goals) {
+    if (onBoundary(goal)) {
+      return { ok: false, error: `巡检点 [${goal[0]}, ${goal[1]}] 不能位于地图边界上` }
+    }
+  }
+
+  // 强制补齐四周边界墙，保证真正的边界不变量
+  enforceBorder(grid, width, height)
 
   // 只保留契约字段，剔除文件里的多余属性
   return { ok: true, map: { width, height, grid, start, goals, charge_point: chargePoint } }
