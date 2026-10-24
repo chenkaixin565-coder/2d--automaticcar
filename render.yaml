@@ -1,0 +1,33 @@
+# 智能巡检机器人二维仿真系统 —— Render 一键部署蓝图（全栈单容器）
+#
+# 部署步骤：
+#   1. 将本仓库推送到 GitHub；
+#   2. 登录 render.com（GitHub 账号即可，免费套餐无需信用卡）；
+#   3. New → Blueprint → 选择本仓库 → Apply，构建约 3-5 分钟；
+#   4. 得到 https://<服务名>.onrender.com 公网链接，手机/电脑直接打开。
+#
+# 免费套餐注意事项：
+#   - 服务 15 分钟无访问会休眠，再次打开需 30-60 秒冷启动；
+#     冷启动期间前端每 5 秒自动重连，连上即恢复，无需手动刷新；
+#   - 引擎为内存态，休眠重启后地图与机器人回到初始状态；
+#   - 区域默认 singapore（亚洲延迟较低），若 Render 报区域相关错误，
+#     删除 region 一行即可（将使用默认区域）。
+
+services:
+  - type: web
+    name: irm-sim-2d
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: TICK_INTERVAL_MS
+        value: "200"
+      - key: LOG_LEVEL
+        value: "INFO"

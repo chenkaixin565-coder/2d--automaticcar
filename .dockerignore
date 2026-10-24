@@ -11,4 +11,5 @@ backend/logs
 backups
 deploy-netlify.zip
 project.zip
+docs
 *.log

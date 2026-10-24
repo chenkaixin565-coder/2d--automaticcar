@@ -25,7 +25,7 @@
 - 真正的地图边界：最外环为固定边界墙——不可绘制、不可擦除、机器人不可穿越，视觉上与普通障碍明确区分（深色斜线纹理），导入地图时自动补齐
 - 移动端通知不遮地图：Toast 在手机端改为文档流内布局（仅桌面端悬浮右上角），同屏最多 2 条
 - 深色模式、响应式布局，手机浏览器可操作
-- 一键 Docker 部署，手机与电脑同网段即可远程控制
+- 一键部署：Docker Compose 本地单容器（同网段手机可远程控制）/ Render 蓝图公网全栈（手机直接打开链接）
 
 ## 系统架构
 
@@ -46,7 +46,7 @@ graph TD
 - 后端：Python 3.11 + FastAPI + Uvicorn
 - 算法 / 数据：numpy + scikit-learn（IsolationForest）
 - 实时通信：WebSocket（状态帧 200ms、异常/通知事件帧）
-- 部署：Docker 多阶段构建（Node 构建前端 → Python 托管）+ docker-compose
+- 部署：Docker 多阶段构建（Node 构建前端 → Python 托管）+ docker-compose + Render 蓝图（`render.yaml` 一键公网部署）
 
 ## 快速开始
 
@@ -70,6 +70,23 @@ cd frontend && npm install && npm run dev
 ```
 
 > 无 Docker 时也可用降级脚本：Linux/macOS 运行 `./run.sh`，Windows 运行 `run.bat`。
+
+### 方式三：Render 一键部署（全栈公网链接，推荐演示用）
+
+仓库根目录的 `render.yaml` 是 Render 蓝图配置，可将「前端 + 后端」作为一个 Web 服务部署到公网：
+
+1. 登录 [render.com](https://render.com)（用 GitHub 账号登录即可，免费套餐无需信用卡）；
+2. New → **Blueprint** → 选择本仓库 → Apply（Render 读取 `render.yaml` 自动创建服务）；
+3. 等待构建约 3–5 分钟，得到 `https://<服务名>.onrender.com` 链接，手机与电脑均可直接打开。
+
+说明：
+
+- 免费套餐 15 分钟无访问会休眠，再次打开需 30–60 秒冷启动；冷启动期间前端每 5 秒自动重连，连上后恢复，无需刷新；
+- 引擎为内存态，休眠重启后地图与机器人回到初始状态；
+- 蓝图区域默认 `singapore`（亚洲延迟较低），若 Render 报区域相关错误，删除该行即可；
+- 同源部署，无需配置 CORS（前端构建期已开启 `VITE_BACKEND_SAME_ORIGIN=true`，由后端直接托管）。
+
+> 仅需前端公网页时，也可单独使用 GitHub Pages（仓库 `gh-pages` 分支）：Pages 为纯静态托管，跑不了后端，页面会以内置本地仿真器运行；如需接入远程后端，在链接后加 `?backend=https://后端地址` 即可（跨源需在后端环境变量 `CORS_ORIGINS` 中放行 Pages 域名）。
 
 ## API 一览
 
@@ -102,6 +119,7 @@ project-root/
 │   ├── static/dist/         # 前端构建产物（由 Docker 多阶段注入）
 │   └── tests/               # pytest 单元测试
 ├── deploy/                  # Dockerfile 与 docker-compose.yml
+├── render.yaml              # Render 一键部署蓝图（全栈公网）
 ├── docs/                    # 设计文档与部署指南
 ├── run.sh / run.bat         # 非容器降级启动脚本
 └── README.md
@@ -122,7 +140,7 @@ npm ci
 npm run lint && npm test && npm run build
 ```
 
-CI（`.github/workflows/ci.yml`）在 push / PR 到 main 时自动执行上述后端、前端两步，并验证 Docker 镜像可构建、可启动。
+CI：仓库内置 `.github/workflows/ci.yml`（push / PR 到 main 时自动执行上述后端、前端两步，并验证 Docker 镜像可构建、可启动）；因推送令牌权限限制（细粒度令牌不支持 workflow 范围）暂未上传至 GitHub，需要时可改用带 `workflow` 权限的令牌补推启用。
 
 ## 许可证
 

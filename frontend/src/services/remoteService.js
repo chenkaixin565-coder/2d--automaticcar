@@ -44,6 +44,8 @@ export class RemoteService extends RobotService {
     this._eventListeners = new Set()
     this._connected = false
     this._ws = null
+    /** 断开提示节流标记：冷启动/网络波动期间只通知一次，避免反复弹窗。 */
+    this._disconnectNotified = false
     /** 标识本服务为远程后端实现，供上层区分数据源。 */
     this.isRemote = true
 
@@ -80,13 +82,19 @@ export class RemoteService extends RobotService {
       this._ws = new WebSocket(this._wsUrl)
       this._ws.onopen = () => {
         this._connected = true
+        this._disconnectNotified = false
         this._fetchInitial()
         this._emitEvent('notice', { message: '已连接到后端仿真服务' })
       }
       this._ws.onmessage = (event) => this._handleFrame(JSON.parse(event.data))
       this._ws.onclose = () => {
         this._connected = false
-        this._emitEvent('notice', { message: '与后端连接已断开' })
+        // 冷启动（如 Render 免费套餐休眠唤醒）期间重连可能持续数十秒，
+        // 断开提示只发一次，成功连上后由 onopen 重置标记。
+        if (!this._disconnectNotified) {
+          this._disconnectNotified = true
+          this._emitEvent('notice', { message: '与后端连接中断，正在自动重连…' })
+        }
         // 5 秒后尝试重连
         setTimeout(() => this._connect(), 5000)
       }
