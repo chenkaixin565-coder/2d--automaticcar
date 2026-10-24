@@ -25,7 +25,7 @@ from app.core.constants import (
     MODE_PATROL,
 )
 from app.models.map import GridMap
-from app.services.anomaly import AnomalyDetector
+from app.services.anomaly import create_detector
 from app.services.patrol import PatrolManager, find_min_obstacle_to_remove, order_goals_by_nearest
 from app.services.sensors import SensorSimulator
 
@@ -68,7 +68,7 @@ class SimulationEngine:
         """初始化引擎：默认地图、初始状态、各服务组件。"""
         self.map = _default_map(config.settings.default_width, config.settings.default_height)
         self.sensor_sim = SensorSimulator(self.map.grid)
-        self.anomaly_detector = AnomalyDetector()
+        self.anomaly_detector = create_detector()
         self.patrol = PatrolManager()
 
         # 机器人运动状态。
@@ -235,6 +235,49 @@ class SimulationEngine:
             logger.info("障碍 (%d, %d) 已拆除", cell_x, cell_y)
         return self.map.model_dump()
 
+    def resolve_fault(self) -> dict:
+        """
+        一键排障：机器人被障碍卡住（mode=blocked）时，清除正前方障碍格
+        并恢复正常控制；无阻塞时仅返回提示。正前方朝向由 theta 近似为
+        四方向步长（与前端 SimulatedService._thetaToDirection 一致）。
+
+        :return: 通知帧 {'type': 'notice', 'data': {'message': str}}。
+        """
+        if self.mode != MODE_BLOCKED:
+            message = "当前无阻塞故障，无需排障"
+            logger.info("一键排障：%s", message)
+            self._emit_notice(message)
+            return {"type": "notice", "data": {"message": message}}
+
+        dx, dy = self._theta_to_step(self.theta)
+        target = (self.x + dx, self.y + dy)
+        if self.map.in_bounds(*target) and self.map.grid[target[1]][target[0]] == CELL_OBSTACLE:
+            self.map.grid[target[1]][target[0]] = 0
+            logger.info("一键排障：拆除前方障碍 (%d, %d)", *target)
+        self.mode = MODE_MANUAL
+        self.path = []
+        message = "已排除前方障碍，恢复正常控制"
+        self._emit_notice(message)
+        return {"type": "notice", "data": {"message": message}}
+
+    @staticmethod
+    def _theta_to_step(theta: float) -> tuple[int, int]:
+        """
+        把朝向角近似为四方向步长。
+
+        :param theta: 朝向角（弧度）。
+        :return: (dx, dy) 单位步长。
+        """
+        normalized = (theta % (2 * math.pi) + 2 * math.pi) % (2 * math.pi)
+        half = math.pi / 4
+        if normalized < half or normalized >= 7 * half:
+            return (1, 0)
+        if normalized < 3 * half:
+            return (0, 1)
+        if normalized < 5 * half:
+            return (-1, 0)
+        return (0, -1)
+
     # ---------- 巡检 ----------
 
     def start_patrol(self, goals: list[list[int]] | None = None) -> dict:
@@ -373,19 +416,18 @@ class SimulationEngine:
             cost = config.settings.battery_move_cost if moving else config.settings.battery_idle_cost
             self.battery = max(0.0, self.battery - cost)
 
-        # 步骤 3：刷新传感器读数。
-        distances = self.sensor_sim.read_distances(self.x, self.y, self.theta)
-        self.sensors.update(distances)
-        self.sensors["temperature"] = self.sensor_sim.read_temperature(moving)
+        # 步骤 3：刷新传感器读数（整合电量/位置，统一喂给异常检测器）。
+        reading = self.sensor_sim.read_all(self.x, self.y, self.theta, self.battery, moving)
+        self.sensors = {
+            "front": reading["front"],
+            "left": reading["left"],
+            "right": reading["right"],
+            "temperature": reading["temperature"],
+        }
+        reading["mode"] = self.mode
 
-        # 步骤 4：规则异常检测。
-        events = self.anomaly_detector.check(
-            battery=self.battery,
-            temperature=self.sensors["temperature"],
-            sensors=self.sensors,
-            position=[self.x, self.y],
-            mode=self.mode,
-        )
+        # 步骤 4：异常检测（规则基线 / 机器学习，按 ANOMALY_STRATEGY 切换）。
+        events = self.anomaly_detector.update(reading)
         for event in events:
             self._emit_anomaly(event)
 

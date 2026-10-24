@@ -45,6 +45,23 @@ class Settings:
     # 传感器突变判定阈值（米），相邻读数变化超过该值视为故障。
     sensor_fault_delta: float = float(os.getenv("SENSOR_FAULT_DELTA", "3.0"))
 
+    # 异常检测策略：rule（默认，规则基线）/ ml（IsolationForest 在线检测）。
+    anomaly_strategy: str = os.getenv("ANOMALY_STRATEGY", "rule")
+
+    # 传感器故障注入概率（0 = 关闭）。开启后每 tick 以该概率制造离群/卡死读数。
+    sensor_fault_prob: float = float(os.getenv("SENSOR_FAULT_PROB", "0.0"))
+
+    # IsolationForest 在线检测参数。
+    ml_coldstart_ticks: int = int(os.getenv("ML_COLDSTART_TICKS", "500"))
+    ml_window_size: int = int(os.getenv("ML_WINDOW_SIZE", "120"))
+    ml_retrain_seconds: int = int(os.getenv("ML_RETRAIN_SECONDS", "60"))
+    # 阈值校准：默认取正常段分数的低分位（百分数），把误报率压到该水平；
+    # 也可用 ML_SCORE_THRESHOLD 指定固定分数阈值覆盖自动校准。
+    ml_score_percentile: float = float(os.getenv("ML_SCORE_PERCENTILE", "2.0"))
+    ml_score_threshold: str = os.getenv("ML_SCORE_THRESHOLD", "")
+    # 污染率：'auto' 或 0–0.5 之间的浮点数。
+    ml_contamination: str = os.getenv("ML_CONTAMINATION", "auto")
+
     # 默认地图尺寸与初始充电点。
     default_width: int = int(os.getenv("DEFAULT_WIDTH", "16"))
     default_height: int = int(os.getenv("DEFAULT_HEIGHT", "12"))

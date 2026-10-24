@@ -23,6 +23,7 @@ ANOMALY_LOW_BATTERY = "low_battery"      # 低电量
 ANOMALY_OBSTACLE = "obstacle"            # 障碍物/寻路失败
 ANOMALY_SENSOR_FAULT = "sensor_fault"    # 传感器故障
 ANOMALY_OVERHEAT = "overheat"            # 过热
+ANOMALY_ML = "ml_anomaly"                # 机器学习综合工况异常
 
 # 四邻域移动方向（dx, dy），保持与前端坐标约定一致。
 DIRECTION_DELTAS = {

@@ -11,6 +11,7 @@
 
 import { RobotService } from './robotService.js'
 import { astar } from './astar.js'
+import { MAP_PRESETS, getPreset } from './mapPresets.js'
 
 /** 仿真 tick 间隔，单位毫秒，与后端 WebSocket 推送频率一致。 */
 const TICK_MS = 200
@@ -48,9 +49,8 @@ const ANOMALY_COOLDOWN_MS = 5000
 /** localStorage 中地图数据的键名。 */
 const STORAGE_MAP_KEY = 'irm_map_v1'
 
-/** 地图默认尺寸。 */
-const DEFAULT_WIDTH = 30
-const DEFAULT_HEIGHT = 20
+/** localStorage 中当前内置地图预设标识的键名。 */
+const STORAGE_PRESET_KEY = 'irm_map_preset_v1'
 
 /**
  * 本地仿真器服务类。
@@ -544,21 +544,31 @@ export class SimulatedService extends RobotService {
 
   /**
    * 从 localStorage 加载地图，不存在则生成默认地图。
+   * 同时恢复上次使用的内置地图预设标识（自定义地图时为 null）。
    *
    * @returns {Object} 地图对象。
    */
   _loadMap() {
+    let presetKey = null
+    try {
+      presetKey = localStorage.getItem(STORAGE_PRESET_KEY)
+    } catch {
+      // localStorage 不可用时忽略，按无预设处理
+    }
     try {
       const stored = localStorage.getItem(STORAGE_MAP_KEY)
       if (stored) {
         const parsed = JSON.parse(stored)
         if (parsed && parsed.grid && parsed.width && parsed.height) {
+          this._presetKey = presetKey
           return parsed
         }
       }
     } catch (error) {
       console.warn('地图本地存储加载失败，使用默认地图：', error)
     }
+    // 全新用户：默认地图即"默认厂房"预设
+    this._presetKey = presetKey || 'factory'
     return this._createDefaultMap()
   }
 
@@ -574,53 +584,27 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 生成默认栅格地图。
+   * 持久化当前内置地图预设标识（自定义地图时清除）。
+   */
+  _savePresetKey() {
+    try {
+      if (this._presetKey) {
+        localStorage.setItem(STORAGE_PRESET_KEY, this._presetKey)
+      } else {
+        localStorage.removeItem(STORAGE_PRESET_KEY)
+      }
+    } catch (error) {
+      console.warn('地图预设标识保存失败：', error)
+    }
+  }
+
+  /**
+   * 生成默认栅格地图（即"默认厂房"预设）。
    *
    * @returns {Object} 默认地图对象。
    */
   _createDefaultMap() {
-    const grid = Array.from({ length: DEFAULT_HEIGHT }, () => Array(DEFAULT_WIDTH).fill(0))
-
-    // 四周边界设为障碍物
-    for (let x = 0; x < DEFAULT_WIDTH; x += 1) {
-      grid[0][x] = 1
-      grid[DEFAULT_HEIGHT - 1][x] = 1
-    }
-    for (let y = 0; y < DEFAULT_HEIGHT; y += 1) {
-      grid[y][0] = 1
-      grid[y][DEFAULT_WIDTH - 1] = 1
-    }
-
-    // 内部障碍物
-    const obstacles = [
-      [5, 3], [6, 3], [7, 3], [8, 3],
-      [12, 5], [12, 6], [12, 7],
-      [18, 4], [19, 4], [20, 4],
-      [4, 12], [5, 12], [6, 12],
-      [15, 13], [16, 13], [17, 13], [18, 13],
-      [22, 10], [22, 11], [22, 12],
-      [10, 16], [11, 16], [12, 16],
-    ]
-    for (const [x, y] of obstacles) {
-      if (x > 0 && x < DEFAULT_WIDTH - 1 && y > 0 && y < DEFAULT_HEIGHT - 1) {
-        grid[y][x] = 1
-      }
-    }
-
-    return {
-      width: DEFAULT_WIDTH,
-      height: DEFAULT_HEIGHT,
-      grid,
-      start: [1, 1],
-      goals: [
-        [5, 5],
-        [15, 8],
-        [25, 5],
-        [10, 15],
-        [20, 16],
-      ],
-      charge_point: [DEFAULT_WIDTH - 2, DEFAULT_HEIGHT - 2],
-    }
+    return getPreset('factory')
   }
 
   // ------------------------------------------------------------------------
@@ -636,12 +620,57 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 更新地图并持久化。
+   * 本地仿真模式下地图即权威来源，直接返回当前地图
+   * （与 RemoteService.fetchMap 保持接口对称）。
+   * @returns {Promise<Object>} 当前地图对象。
+   */
+  async fetchMap() {
+    return this._map
+  }
+
+  /**
+   * 更新地图并持久化。地图被编辑后即视为自定义地图，清除预设标识。
    * @param {Object} map - 完整地图对象。
    */
   updateMap(map) {
     this._map = map
+    this._presetKey = null
     this._saveMap()
+    this._savePresetKey()
+  }
+
+  /**
+   * 切换内置地图预设：整图替换、机器人复位到新起点并持久化。
+   * @param {string} key - 预设标识（factory / warehouse / dense）。
+   */
+  loadPreset(key) {
+    const presetMap = getPreset(key)
+    if (!presetMap) {
+      this._emitEvent('notice', { message: '未找到该内置地图' })
+      return
+    }
+    this._map = presetMap
+    this._presetKey = key
+    this._saveMap()
+    this._savePresetKey()
+    // 机器人复位到新地图起点，避免停留在可能变为障碍的位置
+    this._initRobotState()
+    this._initPatrolState()
+    this._internalTemp = 35.0
+    this._snapshots = []
+    this._updateSensors()
+    this._recordSnapshot()
+    this._emitState()
+    const name = MAP_PRESETS.find((item) => item.key === key)
+    this._emitEvent('notice', { message: `已切换内置地图：${name ? name.name : key}` })
+  }
+
+  /**
+   * 获取当前地图对应的预设标识，自定义地图返回 null。
+   * @returns {string|null} 预设标识。
+   */
+  getPresetKey() {
+    return this._presetKey
   }
 
   /**
@@ -684,6 +713,34 @@ export class SimulatedService extends RobotService {
     this._recordSnapshot()
     this._emitState()
     this._emitEvent('notice', { message: '机器人已复位到起点' })
+  }
+
+  /**
+   * 一键排障：机器人被障碍卡住（mode=blocked）时，按当前朝向找到正前方
+   * 障碍格并清除，随后恢复正常控制；无阻塞时仅推送系统提示。
+   * 与后端 SimulationEngine.resolve_fault 行为保持一致。
+   */
+  resolveFault() {
+    if (this._state.mode !== 'blocked') {
+      this._emitEvent('notice', { message: '当前无阻塞故障，无需排障' })
+      return
+    }
+    const dir = this._thetaToDirection(this._state.theta)
+    const target = [this._state.x + dir[0], this._state.y + dir[1]]
+    if (
+      target[0] >= 0 && target[0] < this._map.width &&
+      target[1] >= 0 && target[1] < this._map.height &&
+      this._map.grid[target[1]][target[0]] === 1
+    ) {
+      this._map.grid[target[1]][target[0]] = 0
+      this._saveMap()
+    }
+    this._state.mode = 'manual'
+    this._state.path = []
+    this._updateSensors()
+    this._recordSnapshot()
+    this._emitState()
+    this._emitEvent('notice', { message: '已排除前方障碍，恢复正常控制' })
   }
 
   /**

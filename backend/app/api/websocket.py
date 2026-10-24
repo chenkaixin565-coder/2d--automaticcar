@@ -110,6 +110,8 @@ def create_ws_router(engine: SimulationEngine, tick_interval_ms: int) -> APIRout
                     engine.stop_patrol()
                 elif action == "reset":
                     engine.reset()
+                elif action == "resolve_fault":
+                    engine.resolve_fault()
                 else:
                     logger.warning("未知指令: %s", action)
 

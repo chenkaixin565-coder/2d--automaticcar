@@ -60,6 +60,11 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
         engine.reset()
         return {"type": "notice", "data": {"message": "机器人已复位到起点"}}
 
+    @router.post("/robot/resolve", summary="一键排障")
+    async def robot_resolve() -> dict:
+        """机器人被障碍卡住时，清除前方障碍并恢复正常控制。"""
+        return engine.resolve_fault()
+
     @router.get("/path", summary="A* 寻路调试接口")
     async def compute_path(
         start: str = Query(..., description="起点坐标，格式 x,y"),

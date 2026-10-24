@@ -110,6 +110,112 @@
       </div>
     </div>
 
+    <!-- 一键排障 -->
+    <div class="space-y-2">
+      <button
+        type="button"
+        class="w-full px-3 py-2 text-sm font-medium rounded-lg border transition-colors flex items-center justify-center gap-2"
+        :class="robot.mode === 'blocked'
+          ? 'border-red-500 bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50'
+          : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'"
+        @click="$emit('resolve-fault')"
+      >
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
+        一键排障
+      </button>
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        机器人被障碍卡住时，自动清除前方障碍并恢复正常控制
+      </p>
+    </div>
+
+    <!-- 内置地图 -->
+    <div class="space-y-2">
+      <h3 class="text-sm font-medium text-gray-800 dark:text-gray-200">内置地图</h3>
+      <div class="flex flex-col gap-1.5">
+        <button
+          v-for="preset in MAP_PRESETS"
+          :key="preset.key"
+          type="button"
+          class="flex items-center justify-between gap-2 px-3 py-2 text-xs rounded-lg border transition-colors text-left"
+          :class="mapPreset === preset.key
+            ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+            : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'"
+          @click="$emit('select-preset', preset.key)"
+        >
+          <span class="min-w-0">
+            <span class="font-medium">{{ preset.name }}</span>
+            <span class="ml-1 text-gray-500 dark:text-gray-400">{{ preset.description }}</span>
+          </span>
+          <svg v-if="mapPreset === preset.key" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+        </button>
+      </div>
+      <p class="text-xs text-gray-500 dark:text-gray-400">切换后机器人自动复位到新地图起点</p>
+    </div>
+
+    <!-- 地图导入导出 -->
+    <div class="space-y-2">
+      <h3 class="text-sm font-medium text-gray-800 dark:text-gray-200">地图导入导出</h3>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+          @click="$emit('export-map')"
+        >
+          导出地图
+        </button>
+        <button
+          type="button"
+          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+          @click="triggerImport"
+        >
+          导入地图
+        </button>
+        <!-- 隐藏的文件选择框，由"导入地图"按钮触发 -->
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept=".json,application/json"
+          class="hidden"
+          @change="onFileChange"
+        >
+      </div>
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        导出当前地图为 JSON 文件；导入时自动校验结构，成功后机器人复位
+      </p>
+    </div>
+
+    <!-- 机器人形象 -->
+    <div class="space-y-2">
+      <h3 class="text-sm font-medium text-gray-800 dark:text-gray-200">机器人形象</h3>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+          @click="triggerAvatarUpload"
+        >
+          上传形象
+        </button>
+        <button
+          v-if="hasAvatar"
+          type="button"
+          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+          @click="$emit('avatar-change', null)"
+        >
+          恢复默认
+        </button>
+        <input
+          ref="avatarInputRef"
+          type="file"
+          accept="image/*"
+          class="hidden"
+          @change="onAvatarFileChange"
+        >
+      </div>
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        支持 PNG / JPG / SVG，不超过 2MB；图片仅保存在本地浏览器
+      </p>
+    </div>
+
     <!-- 巡检点列表 -->
     <div class="space-y-2">
       <div class="flex items-center justify-between">
@@ -149,7 +255,10 @@
  * 提供手动方向控制、地图编辑模式切换、自动巡检启停与巡检点管理。
  */
 
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { MAP_PRESETS } from '../services/mapPresets.js'
+import { importMap } from '../utils/mapIO.js'
+import { readAvatarFile } from '../utils/robotAvatar.js'
 
 const props = defineProps({
   robot: {
@@ -168,17 +277,81 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  mapPreset: {
+    type: String,
+    default: null,
+  },
+  hasAvatar: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits([
   'move',
   'reset',
+  'resolve-fault',
+  'select-preset',
+  'export-map',
+  'import-map',
+  'import-error',
+  'avatar-change',
+  'avatar-error',
   'start-patrol',
   'stop-patrol',
   'set-edit-mode',
   'clear-goals',
   'remove-goal',
 ])
+
+// --------------------------------------------------------------------------
+// 地图导入：隐藏 file input 的选择与解析
+// --------------------------------------------------------------------------
+
+const fileInputRef = ref(null)
+
+function triggerImport() {
+  if (fileInputRef.value) {
+    fileInputRef.value.click()
+  }
+}
+
+async function onFileChange(event) {
+  const file = event.target.files && event.target.files[0]
+  // 清空选择值，允许重复导入同一个文件
+  event.target.value = ''
+  if (!file) return
+  try {
+    const imported = await importMap(file)
+    emit('import-map', imported)
+  } catch (error) {
+    emit('import-error', error.message || '未知错误')
+  }
+}
+
+// --------------------------------------------------------------------------
+// 机器人形象上传：隐藏 file input 的选择与校验
+// --------------------------------------------------------------------------
+
+const avatarInputRef = ref(null)
+
+function triggerAvatarUpload() {
+  if (avatarInputRef.value) {
+    avatarInputRef.value.click()
+  }
+}
+
+async function onAvatarFileChange(event) {
+  const file = event.target.files && event.target.files[0]
+  event.target.value = ''
+  if (!file) return
+  try {
+    const dataUrl = await readAvatarFile(file)
+    emit('avatar-change', dataUrl)
+  } catch (error) {
+    emit('avatar-error', error.message || '未知错误')
+  }
+}
 
 const editModes = [
   { key: 'pan', label: '平移' },

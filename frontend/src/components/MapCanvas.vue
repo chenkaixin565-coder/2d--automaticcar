@@ -1,12 +1,12 @@
 <template>
-  <div class="relative w-full h-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+  <div class="relative w-full h-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" :class="{ 'canvas-shake': shaking }">
     <canvas
       ref="canvasRef"
       class="absolute inset-0 w-full h-full cursor-crosshair touch-none"
       @mousedown="handleMouseDown"
       @mousemove="handleMouseMove"
       @mouseup="handleMouseUp"
-      @mouseleave="handleMouseUp"
+      @mouseleave="handleMouseUp(); handleHoverLeave()"
       @wheel.prevent="handleWheel"
       @touchstart="handleTouchStart"
       @touchmove="handleTouchMove"
@@ -70,6 +70,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  robotAvatar: {
+    type: String,
+    default: null,
+  },
 })
 
 const emit = defineEmits([
@@ -104,19 +108,122 @@ const editModeLabel = computed(() => {
 })
 
 onMounted(() => {
+  ensureAnimInit()
   render()
   window.addEventListener('resize', render)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', render)
+  if (animFrame !== null) {
+    cancelAnimationFrame(animFrame)
+    animFrame = null
+  }
+  if (shakeTimer) {
+    clearTimeout(shakeTimer)
+  }
 })
 
 watch(
   () => [props.map, props.robot, props.playbackSnapshot, props.scale, props.offset, props.editMode, props.isDark],
-  () => render(),
+  () => {
+    ensureAnimInit()
+    render()
+    // 状态帧（5Hz）到达后继续平滑动画，直到插值收敛
+    startAnimLoop()
+  },
   { deep: true }
 )
+
+// --------------------------------------------------------------------------
+// 2D 平滑动画
+// 后端/仿真器以 5Hz 推送格子坐标，直接绘制会产生跳变。这里维护一份动画
+// 坐标，用指数平滑向目标位置/朝向插值（时间常数 60ms），requestAnimationFrame
+// 逐帧重绘；收敛后自动停表，不做无用空转。
+// --------------------------------------------------------------------------
+
+const animPos = { x: 0, y: 0, theta: 0 }
+let animInitialized = false
+let animFrame = null
+let lastFrameTime = 0
+
+/** 指数平滑时间常数（毫秒）：越小越紧跟，越大越拖尾。 */
+const ANIM_TAU_MS = 60
+
+/** 首帧前把动画坐标对齐到当前机器人位置，避免从原点飞入。 */
+function ensureAnimInit() {
+  if (animInitialized) return
+  animPos.x = props.robot.x
+  animPos.y = props.robot.y
+  animPos.theta = props.robot.theta || 0
+  animInitialized = true
+}
+
+/** 角度最短路径插值，避免绕远路（如 350° → 10° 不转 340°）。 */
+function lerpAngle(a, b, t) {
+  let diff = b - a
+  while (diff > Math.PI) diff -= Math.PI * 2
+  while (diff < -Math.PI) diff += Math.PI * 2
+  return a + diff * t
+}
+
+/** 启动动画循环；已在运行则复用。 */
+function startAnimLoop() {
+  if (animFrame !== null) return
+  lastFrameTime = performance.now()
+  const step = (now) => {
+    // 后台标签页回来后 dt 可能极大，截断到 100ms 防止瞬移
+    const dt = Math.min(100, now - lastFrameTime)
+    lastFrameTime = now
+    const target = props.playbackSnapshot || props.robot
+    const t = 1 - Math.exp(-dt / ANIM_TAU_MS)
+    animPos.x += (target.x - animPos.x) * t
+    animPos.y += (target.y - animPos.y) * t
+    animPos.theta = lerpAngle(animPos.theta, target.theta || 0, t)
+
+    // 收敛判定：位置与朝向都足够接近则吸附并停表
+    const remainTheta = lerpAngle(animPos.theta, target.theta || 0, 1) - animPos.theta
+    const settled =
+      Math.abs(target.x - animPos.x) < 0.002 &&
+      Math.abs(target.y - animPos.y) < 0.002 &&
+      Math.abs(remainTheta) < 0.002
+    if (settled) {
+      animPos.x = target.x
+      animPos.y = target.y
+      animPos.theta = target.theta || 0
+      animFrame = null
+    } else {
+      animFrame = requestAnimationFrame(step)
+    }
+    render()
+  }
+  animFrame = requestAnimationFrame(step)
+}
+
+// 撞障碍抖动：机器人撞墙（mode 变为 blocked）时触发一次短促抖动。
+const shaking = ref(false)
+let shakeTimer = null
+
+watch(
+  () => props.robot.mode,
+  (mode, prev) => {
+    if (mode === 'blocked' && prev !== 'blocked') {
+      triggerShake()
+    }
+  }
+)
+
+function triggerShake() {
+  shaking.value = false
+  // 下一帧再置位，确保同一状态连续触发时动画能重启。
+  requestAnimationFrame(() => {
+    shaking.value = true
+    clearTimeout(shakeTimer)
+    shakeTimer = setTimeout(() => {
+      shaking.value = false
+    }, 360)
+  })
+}
 
 /**
  * 主绘制函数。
@@ -150,11 +257,11 @@ function render() {
   if (snapshot) {
     drawTrail(ctx, snapshot.visitedTrail || [])
     drawPath(ctx, snapshot.path || [])
-    drawRobot(ctx, snapshot, true)
+    drawRobot(ctx, { x: animPos.x, y: animPos.y, theta: animPos.theta }, true)
   } else {
     drawTrail(ctx, props.visitedTrail)
     drawPath(ctx, props.robot.path || [])
-    drawRobot(ctx, props.robot, false)
+    drawRobot(ctx, { x: animPos.x, y: animPos.y, theta: animPos.theta }, false)
   }
 
   drawHover(ctx)
@@ -279,7 +386,8 @@ function drawPath(ctx, path) {
 }
 
 /**
- * 绘制机器人（圆形机身 + 朝向箭头）。
+ * 绘制机器人（自定义形象图片或圆形机身 + 朝向箭头）。
+ * 形象图片保持正立，朝向由白色箭头指示，避免上传图标方向感丢失。
  */
 function drawRobot(ctx, state, isGhost) {
   const cx = (state.x + 0.5) * CELL_PIXELS
@@ -290,11 +398,16 @@ function drawRobot(ctx, state, isGhost) {
   ctx.save()
   ctx.translate(cx, cy)
 
-  // 机身
-  ctx.fillStyle = isGhost ? 'rgba(59, 130, 246, 0.4)' : '#2563eb'
-  ctx.beginPath()
-  ctx.arc(0, 0, radius, 0, Math.PI * 2)
-  ctx.fill()
+  // 机身：优先使用自定义形象（回放幽灵态不绘制形象，保持半透明蓝点）
+  if (!isGhost && avatarImage.value) {
+    const size = radius * 2
+    ctx.drawImage(avatarImage.value, -radius, -radius, size, size)
+  } else {
+    ctx.fillStyle = isGhost ? 'rgba(59, 130, 246, 0.4)' : '#2563eb'
+    ctx.beginPath()
+    ctx.arc(0, 0, radius, 0, Math.PI * 2)
+    ctx.fill()
+  }
 
   // 朝向箭头
   ctx.strokeStyle = '#ffffff'
@@ -326,6 +439,38 @@ function drawHover(ctx) {
 // --------------------------------------------------------------------------
 
 const hoverCell = ref(null)
+
+// 悬停格变化时立即重绘，保证编辑模式下的高亮跟手
+watch(hoverCell, () => render())
+
+// --------------------------------------------------------------------------
+// 自定义机器人形象：异步加载用户上传的图片，失败时回退默认矢量绘制
+// --------------------------------------------------------------------------
+
+const avatarImage = ref(null)
+
+watch(
+  () => props.robotAvatar,
+  (url) => {
+    avatarImage.value = null
+    if (!url) {
+      render()
+      return
+    }
+    const img = new Image()
+    img.onload = () => {
+      avatarImage.value = img
+      render()
+    }
+    img.onerror = () => {
+      console.warn('机器人形象加载失败，使用默认绘制')
+      avatarImage.value = null
+      render()
+    }
+    img.src = url
+  },
+  { immediate: true }
+)
 
 function getEventPos(event) {
   const canvas = canvasRef.value
@@ -383,6 +528,7 @@ function handleMouseMove(event) {
     emit('hover', { x: cell[0], y: cell[1] })
   } else {
     hoverCell.value = null
+    emit('hover', null)
   }
 
   if (isPanning.value) {
@@ -408,6 +554,12 @@ function handleMouseUp() {
   isPanning.value = false
   isPainting.value = false
   lastPaintCell.value = null
+}
+
+/** 鼠标移出画布：清除悬停高亮并通知外层隐藏详情徽标。 */
+function handleHoverLeave() {
+  hoverCell.value = null
+  emit('hover', null)
 }
 
 function handleWheel(event) {
@@ -500,3 +652,21 @@ function inBounds(cell) {
   return x >= 0 && x < props.map.width && y >= 0 && y < props.map.height
 }
 </script>
+
+<style scoped>
+/* 撞障碍抖动：机器人 mode 切到 blocked 时整块地图快速左右晃动，
+   动画只操作 transform，不触发重排，性能开销可忽略 */
+.canvas-shake {
+  animation: canvas-shake 0.36s ease-in-out;
+}
+
+@keyframes canvas-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-6px); }
+  30% { transform: translateX(6px); }
+  45% { transform: translateX(-4px); }
+  60% { transform: translateX(4px); }
+  75% { transform: translateX(-2px); }
+  90% { transform: translateX(2px); }
+}
+</style>

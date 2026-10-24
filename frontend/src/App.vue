@@ -33,6 +33,7 @@
           :offset="offset"
           :edit-mode="editMode"
           :is-dark="isDark"
+          :robot-avatar="robotAvatar"
           @view-change="onViewChange"
           @edit-obstacle="onEditObstacle"
           @set-goal="onSetGoal"
@@ -40,6 +41,14 @@
           @set-charge="onSetCharge"
           @hover="hoverCell = $event"
         />
+
+        <!-- 悬停格详情徽标（详情表面化：坐标与格子类型直接显示在地图上） -->
+        <div
+          v-if="hoverCell"
+          class="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 px-2.5 py-1 rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300 shadow-sm pointer-events-none whitespace-nowrap"
+        >
+          [{{ hoverCell.x }}, {{ hoverCell.y }}] · {{ hoverCellType }}
+        </div>
 
         <!-- 地图缩放按钮 -->
         <div class="absolute bottom-3 left-3 flex flex-col gap-1.5 z-20">
@@ -86,8 +95,17 @@
           :patrol-status="patrolStatus"
           :edit-mode="editMode"
           :map-goals="map.goals"
+          :map-preset="mapPresetKey"
+          :has-avatar="!!robotAvatar"
           @move="onMove"
           @reset="onReset"
+          @resolve-fault="onResolveFault"
+          @select-preset="onSelectPreset"
+          @export-map="onExportMap"
+          @import-map="onImportMap"
+          @import-error="onImportError"
+          @avatar-change="onAvatarChange"
+          @avatar-error="onAvatarError"
           @start-patrol="onStartPatrol"
           @stop-patrol="onStopPatrol"
           @set-edit-mode="editMode = $event"
@@ -116,6 +134,7 @@
         :detail-open="drawerOpen"
         @move="onMove"
         @reset="onReset"
+        @resolve-fault="onResolveFault"
         @start-patrol="onStartPatrol"
         @stop-patrol="onStopPatrol"
         @set-edit-mode="editMode = $event"
@@ -172,8 +191,10 @@
  * 并通过 RobotService 与本地仿真器交互。
  */
 
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { createRobotService } from './services/index.js'
+import { exportMap } from './utils/mapIO.js'
+import { getAvatar, setAvatar, clearAvatar } from './utils/robotAvatar.js'
 import ThemeToggle from './components/ThemeToggle.vue'
 import MapCanvas from './components/MapCanvas.vue'
 import ControlPanel from './components/ControlPanel.vue'
@@ -205,7 +226,12 @@ const backendConnected = ref(false)
 const service = createRobotService()
 const usingBackend = ref(!!service.isRemote)
 const map = reactive(service.getMap())
-service.updateMap(map)
+
+// 当前内置地图预设标识（自定义地图为 null），用于控制台高亮
+const mapPresetKey = ref(service.getPresetKey ? service.getPresetKey() : null)
+
+// 机器人自定义形象（data URL），null 表示使用默认矢量绘制
+const robotAvatar = ref(getAvatar())
 
 // 视图状态
 const robot = ref({
@@ -234,6 +260,22 @@ const mapContainerRef = ref(null)
 // 主题
 const isDark = ref(false)
 
+// 悬停格详情：MapCanvas 悬停事件给出 {x, y} 或 null，
+// hoverCellType 负责把坐标翻译成"起点 / 巡检点 N / 障碍"等人类可读类型。
+const hoverCellType = computed(() => {
+  const cell = hoverCell.value
+  if (!cell) return ''
+  const { x, y } = cell
+  if (x < 0 || x >= map.width || y < 0 || y >= map.height) return '界外'
+  if (robot.value.x === x && robot.value.y === y) return '机器人'
+  if (map.start[0] === x && map.start[1] === y) return '起点'
+  if (map.charge_point[0] === x && map.charge_point[1] === y) return '充电点'
+  const goalIndex = map.goals.findIndex((g) => g[0] === x && g[1] === y)
+  if (goalIndex >= 0) return `巡检点 ${goalIndex + 1}`
+  if (map.grid[y][x] === 1) return '障碍'
+  return '可通行'
+})
+
 // 移动端抽屉
 const drawerOpen = ref(false)
 
@@ -249,6 +291,11 @@ const playbackSnapshot = computed(() => {
 // Toast
 const toasts = ref([])
 let toastId = 0
+
+// 同类告警的节流表：后端高频异常帧（5Hz）若不做节流会叠层遮住地图，
+// 这里按类型记录上次弹出时间，非系统提示类至少间隔 TOAST_COOLDOWN_MS 才再弹。
+const TOAST_COOLDOWN_MS = 5000
+const toastCooldowns = new Map()
 
 let unsubscribeState = null
 let unsubscribeEvent = null
@@ -286,6 +333,15 @@ onMounted(() => {
       addToast('notice', msg)
     }
   })
+
+  // 后端模式下服务端地图才是权威来源：连接后拉取并同步进响应式地图，
+  // 避免刷新页面后客户端默认地图与服务端实际地图不一致。
+  if (usingBackend.value) {
+    service.fetchMap().then((serverMap) => {
+      Object.assign(map, serverMap)
+      fitMap()
+    })
+  }
 })
 
 onUnmounted(() => {
@@ -400,6 +456,17 @@ function onViewChange(payload) {
 // 机器人控制
 // --------------------------------------------------------------------------
 
+// 卡住提示：机器人撞障进入 blocked 时弹出提示（toast 内部已按类型节流），
+// 与地图抖动、控制台高亮按钮共同构成"撞障三连"反馈。
+watch(
+  () => robot.value.mode,
+  (mode, prev) => {
+    if (mode === 'blocked' && prev !== 'blocked') {
+      addToast('stuck', '机器人被障碍物卡住，可点击“一键排障”清除前方障碍')
+    }
+  }
+)
+
 function onMove(payload) {
   service.move(payload.dx, payload.dy)
 }
@@ -408,6 +475,11 @@ function onReset() {
   service.reset()
   snapshots.value = []
   stopPlayback()
+}
+
+// 一键排障：由服务层执行（本地仿真或后端命令），结果以 notice 形式反馈。
+function onResolveFault() {
+  service.resolveFault()
 }
 
 function handleKeyDown(event) {
@@ -444,9 +516,15 @@ function onStopPatrol() {
 // 地图编辑
 // --------------------------------------------------------------------------
 
+// 地图被手动编辑后即视为自定义地图，取消预设高亮
+function markMapCustom() {
+  mapPresetKey.value = null
+}
+
 function onEditObstacle({ x, y, value }) {
   if (x < 0 || x >= map.width || y < 0 || y >= map.height) return
   map.grid[y][x] = value
+  markMapCustom()
   service.updateMap(map)
 }
 
@@ -459,29 +537,109 @@ function onSetGoal({ x, y }) {
   } else {
     goals.push([x, y])
   }
+  markMapCustom()
   service.updateMap(map)
 }
 
 function onSetStart({ x, y }) {
   if (map.grid[y][x] === 1) return
   map.start = [x, y]
+  markMapCustom()
   service.updateMap(map)
 }
 
 function onSetCharge({ x, y }) {
   if (map.grid[y][x] === 1) return
   map.charge_point = [x, y]
+  markMapCustom()
   service.updateMap(map)
 }
 
 function onClearGoals() {
   map.goals = []
+  markMapCustom()
   service.updateMap(map)
 }
 
 function onRemoveGoal(index) {
   map.goals.splice(index, 1)
+  markMapCustom()
   service.updateMap(map)
+}
+
+/**
+ * 切换内置地图：服务层整图替换并复位机器人，随后同步响应式地图、
+ * 清理回放数据并按新尺寸适配视图。
+ */
+function onSelectPreset(key) {
+  service.loadPreset(key)
+  // 服务层可能替换了内部地图对象，这里把新字段同步进响应式包装
+  Object.assign(map, service.getMap())
+  mapPresetKey.value = key
+  snapshots.value = []
+  stopPlayback()
+  fitMap()
+}
+
+/**
+ * 导出当前地图为 JSON 文件。
+ */
+function onExportMap() {
+  exportMap(service.getMap())
+}
+
+/**
+ * 导入地图：整体替换、清除预设标识、复位机器人并适配视图。
+ *
+ * @param {Object} imported - 已通过结构校验的地图对象。
+ */
+function onImportMap(imported) {
+  Object.assign(map, imported)
+  mapPresetKey.value = null
+  service.updateMap(map)
+  // 机器人可能停在障碍格上，统一复位到新地图起点
+  service.reset()
+  snapshots.value = []
+  stopPlayback()
+  fitMap()
+  addToast('notice', '地图导入成功，机器人已复位到起点')
+}
+
+/**
+ * 地图导入失败提示（结构校验不通过或文件损坏）。
+ *
+ * @param {string} message - 失败原因。
+ */
+function onImportError(message) {
+  addToast('notice', `地图导入失败：${message}`)
+}
+
+/**
+ * 更换机器人形象：dataUrl 为 null 表示恢复默认矢量绘制。
+ *
+ * @param {string|null} dataUrl - 图片 data URL 或 null。
+ */
+function onAvatarChange(dataUrl) {
+  if (dataUrl) {
+    if (!setAvatar(dataUrl)) {
+      addToast('notice', '形象保存失败：本地存储空间不足')
+      return
+    }
+    addToast('notice', '机器人形象已更新')
+  } else {
+    clearAvatar()
+    addToast('notice', '已恢复默认机器人形象')
+  }
+  robotAvatar.value = getAvatar()
+}
+
+/**
+ * 形象上传失败提示（类型/大小不符或读取失败）。
+ *
+ * @param {string} message - 失败原因。
+ */
+function onAvatarError(message) {
+  addToast('notice', `形象上传失败：${message}`)
 }
 
 // --------------------------------------------------------------------------
@@ -534,10 +692,19 @@ const toastTitles = {
   obstacle: '障碍物告警',
   sensor_fault: '传感器异常',
   overheat: '过热告警',
+  ml_anomaly: '工况异常',
+  stuck: '卡住提示',
   notice: '系统提示',
 }
 
 function addToast(type, message) {
+  // notice 类（系统提示）不过节流，其余告警类按类型节流防叠层
+  if (type !== 'notice') {
+    const now = Date.now()
+    const last = toastCooldowns.get(type) || 0
+    if (now - last < TOAST_COOLDOWN_MS) return
+    toastCooldowns.set(type, now)
+  }
   const id = toastId++
   toasts.value.push({ id, type, title: toastTitles[type] || type, message })
   setTimeout(() => {
@@ -551,6 +718,8 @@ function toastClass(type) {
     obstacle: 'border-red-500',
     sensor_fault: 'border-purple-500',
     overheat: 'border-yellow-500',
+    ml_anomaly: 'border-indigo-500',
+    stuck: 'border-red-500',
     notice: 'border-blue-500',
   }
   return classes[type] || 'border-gray-500'

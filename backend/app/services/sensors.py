@@ -27,6 +27,8 @@ class SensorSimulator:
         :param grid: 当前栅格地图，用于射线碰撞判定。
         """
         self.grid = grid
+        # 故障注入开关：每 tick 以该概率制造离群/卡死读数，用于异常检测演示。
+        self.fault_prob: float = config.settings.sensor_fault_prob
 
     def set_grid(self, grid: list[list[int]]) -> None:
         """更新地图引用（地图被编辑后调用）。"""
@@ -95,3 +97,50 @@ class SensorSimulator:
         noise = random.gauss(0, config.settings.temperature_noise * 0.3)
         value = config.settings.base_temperature + rise + noise
         return round(value, 1)
+
+    def _inject_fault(self, readings: dict) -> None:
+        """
+        按概率对某一方向测距注入故障，模拟探头失效。
+
+        离群值：在真实读数上叠加大幅偏移；卡死值：随机钉死在某读数。
+        注入后该通道读数偏离正常分布，供规则/机器学习检测捕获。
+
+        :param readings: 待注入的测距字典（原地修改 front/left/right）。
+        """
+        if self.fault_prob <= 0 or random.random() >= self.fault_prob:
+            return
+        channel = random.choice(("front", "left", "right"))
+        base = readings[channel]
+        if base is None:
+            base = config.settings.sensor_range_m
+        if random.random() < 0.5:
+            # 离群值：大幅跳变。
+            readings[channel] = round(max(0.0, base + random.uniform(2.5, 4.0)), 2)
+        else:
+            # 卡死值：随机钉死。
+            readings[channel] = round(random.uniform(0.0, config.settings.sensor_range_m), 2)
+
+    def read_all(self, x: int, y: int, theta: float, battery: float, is_moving: bool) -> dict:
+        """
+        采集本 tick 的完整传感读数。
+
+        整合三向测距、温度与电量，并按需注入故障。返回的字典同时作为
+        异常检测器的统一输入（含 position 便于事件定位）。
+
+        :param x: 机器人列坐标。
+        :param y: 机器人行坐标。
+        :param theta: 机器人朝向角（弧度）。
+        :param battery: 当前电量百分比。
+        :param is_moving: 机器人当前是否在移动。
+        :return: {'battery', 'temperature', 'front', 'left', 'right', 'position'}
+        """
+        distances = self.read_distances(x, y, theta)
+        self._inject_fault(distances)
+        return {
+            "battery": battery,
+            "temperature": self.read_temperature(is_moving),
+            "front": distances["front"],
+            "left": distances["left"],
+            "right": distances["right"],
+            "position": [x, y],
+        }

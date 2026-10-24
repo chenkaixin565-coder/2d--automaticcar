@@ -84,6 +84,16 @@
         <div class="flex gap-2">
           <button
             type="button"
+            class="flex-1 px-2 py-1.5 text-xs rounded-lg border transition-colors"
+            :class="robot.mode === 'blocked'
+              ? 'border-red-500 bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+              : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300'"
+            @click="$emit('resolve-fault')"
+          >
+            一键排障
+          </button>
+          <button
+            type="button"
             class="flex-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300"
             @click="$emit('fit-map')"
           >
@@ -120,6 +130,7 @@ defineProps({
 const emit = defineEmits([
   'move',
   'reset',
+  'resolve-fault',
   'start-patrol',
   'stop-patrol',
   'set-edit-mode',

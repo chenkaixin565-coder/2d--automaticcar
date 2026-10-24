@@ -57,6 +57,41 @@ export class RobotService {
   }
 
   /**
+   * 一键排障：机器人被障碍卡住（mode=blocked）时，清除正前方障碍格
+   * 并恢复正常控制；无阻塞时仅推送系统提示。
+   * @returns {Promise<void>|void}
+   */
+  resolveFault() {
+    throw new Error('子类必须实现 resolveFault 方法')
+  }
+
+  /**
+   * 切换内置地图预设（mapPresets.js 中的 factory / warehouse / dense）。
+   * @param {string} _key - 预设标识。
+   * @returns {Promise<void>|void}
+   */
+  loadPreset(_key) {
+    throw new Error('子类必须实现 loadPreset 方法')
+  }
+
+  /**
+   * 获取当前地图对应的预设标识，自定义地图返回 null。
+   * @returns {Promise<string|null>|string|null} 预设标识。
+   */
+  getPresetKey() {
+    throw new Error('子类必须实现 getPresetKey 方法')
+  }
+
+  /**
+   * 从权威来源拉取地图并刷新缓存（后端模式下拉取服务端地图，
+   * 本地模式直接返回当前地图）。
+   * @returns {Promise<Object>} 地图对象。
+   */
+  fetchMap() {
+    throw new Error('子类必须实现 fetchMap 方法')
+  }
+
+  /**
    * 计算从起点到终点的 A* 路径。
    * @param {number[]} start - 起点 [x, y]。
    * @param {number[]} goal - 终点 [x, y]。

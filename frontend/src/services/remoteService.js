@@ -10,6 +10,7 @@
  *   实时刷新，从而保证界面组件与本地仿真器零差异；
  * - 控制类方法（move / reset / startPatrol / stopPatrol / updateMap /
  *   clearAnomalies）优先通过 WebSocket 命令帧下发，未连接时回退到 REST；
+ * - fetchMap 在连接建立后拉取服务端权威地图，保证刷新页面后两端一致；
  * - 推送的数据结构与服务端 WebSocket 协议逐字段一致。
  *
  * 接入方式：在 URL 后附加 ?backend=http(s)://后端地址 即可切换到本服务，
@@ -17,6 +18,7 @@
  */
 
 import { RobotService } from './robotService.js'
+import { getPreset } from './mapPresets.js'
 
 /** localStorage 中地图数据的键名，与 SimulatedService 共用。 */
 const STORAGE_MAP_KEY = 'irm_map_v1'
@@ -220,6 +222,26 @@ export class RemoteService extends RobotService {
   }
 
   /**
+   * 从服务端拉取地图并刷新缓存。
+   *
+   * 后端模式下服务端地图才是权威来源（例如其它客户端切换过内置地图），
+   * 连接建立后由上层调用本方法同步，避免刷新页面后两端地图不一致。
+   *
+   * @returns {Promise<Object>} 拉取到的地图对象。
+   */
+  async fetchMap() {
+    try {
+      const map = await this._rest('GET', '/api/v1/map')
+      if (map && map.grid && map.width && map.height) {
+        this._map = map
+      }
+    } catch (error) {
+      console.warn('服务端地图拉取失败，沿用本地默认地图：', error)
+    }
+    return this._map
+  }
+
+  /**
    * 更新地图：始终通过 REST PUT 同步到服务端（服务端不在 WS 命令中处理
    * 地图更新），并写入本地缓存供离线回退。
    * @param {Object} map - 完整地图对象。
@@ -254,6 +276,33 @@ export class RemoteService extends RobotService {
     }
     this._visitedTrail = [[this._state.x, this._state.y]]
     this._snapshots = []
+  }
+
+  /**
+   * 一键排障：命令后端清除机器人前方障碍并恢复控制。
+   */
+  resolveFault() {
+    if (!this._sendCommand('resolve_fault', {})) {
+      this._rest('POST', '/api/v1/robot/resolve').catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 切换内置地图预设：经 REST PUT 同步到服务端（服务端会校验并回落起点）。
+   * @param {string} key - 预设标识。
+   */
+  loadPreset(key) {
+    const presetMap = getPreset(key)
+    if (!presetMap) return
+    this.updateMap(presetMap)
+  }
+
+  /**
+   * 远程模式的预设标识由上层（App.vue）维护，此处返回 null 占位。
+   * @returns {string|null} 预设标识。
+   */
+  getPresetKey() {
+    return null
   }
 
   /**
