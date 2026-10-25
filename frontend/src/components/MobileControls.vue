@@ -80,6 +80,13 @@
           >
             停止
           </button>
+          <button
+            type="button"
+            class="flex-1 px-2 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
+            @click="$emit('open-plan')"
+          >
+            规划路线
+          </button>
         </div>
         <div class="flex gap-2">
           <button
@@ -115,9 +122,9 @@
 <script setup>
 /**
  * 组件功能：移动端底部快捷控制条
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-23
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  */
 
 defineProps({
@@ -136,6 +143,7 @@ const emit = defineEmits([
   'set-edit-mode',
   'fit-map',
   'toggle-detail',
+  'open-plan',
 ])
 
 const editModes = [
@@ -144,6 +152,7 @@ const editModes = [
   { key: 'goal', label: '巡检点' },
   { key: 'start', label: '起点' },
   { key: 'charge', label: '充电' },
+  { key: 'clear', label: '清障' },
 ]
 
 function emitMove(dx, dy) {

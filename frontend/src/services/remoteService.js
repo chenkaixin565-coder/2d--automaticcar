@@ -1,15 +1,16 @@
 /**
  * 模块功能：远程后端服务实现（RemoteService）
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-24
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  *
  * 本模块实现与 RobotService 完全相同的接口，但数据来源为 FastAPI 后端：
  * - 同步 getter（getMap / getPatrolStatus / getAnomalies / getVisitedTrail /
  *   getSnapshots / getSensors）返回内部缓存，由 WebSocket 推送帧与 REST 响应
  *   实时刷新，从而保证界面组件与本地仿真器零差异；
  * - 控制类方法（move / reset / startPatrol / stopPatrol / updateMap /
- *   clearAnomalies）优先通过 WebSocket 命令帧下发，未连接时回退到 REST；
+ *   clearAnomalies / planRoute / clearObstacleAt / executePlanClear /
+ *   carryBackHome）优先通过 WebSocket 命令帧下发，未连接时回退到 REST；
  * - fetchMap 在连接建立后拉取服务端权威地图，保证刷新页面后两端一致；
  * - 推送的数据结构与服务端 WebSocket 协议逐字段一致。
  *
@@ -55,7 +56,7 @@ export class RemoteService extends RobotService {
       x: 0, y: 0, theta: 0, battery: 100, speed: 0, mode: 'manual',
       path: [], sensors: { front: null, left: null, right: null, temperature: 35 },
     }
-    this._patrol = { running: false, current_goal: null, progress: 0, path_remain: 0 }
+    this._patrol = { running: false, current_goal: null, progress: 0, path_remain: 0, blocked_by: null }
     this._anomalies = []
     this._snapshots = []
     this._visitedTrail = [[0, 0]]
@@ -296,6 +297,86 @@ export class RemoteService extends RobotService {
   }
 
   /**
+   * 一键规划路线（V1.2）：命令后端计算穿障最短路径与电力预算内的待清障目标。
+   * WS 模式下规划结果随 state 帧的 plan 字段下发；REST 回退时直接采用响应体。
+   * @param {number[]} goal - 目标点坐标 [x, y]。
+   */
+  planRoute(goal) {
+    if (!this._sendCommand('plan', { goal })) {
+      this._rest('POST', '/api/v1/plan', { goal })
+        .then((plan) => {
+          if (plan && Array.isArray(plan.path)) {
+            this._state.plan = plan
+            this._emitState()
+          }
+        })
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 清除指定障碍格（V1.2 手动清障 / 规划内清障）。
+   * @param {number[]} cell - 障碍坐标 [x, y]。
+   */
+  clearObstacleAt(cell) {
+    if (!this._sendCommand('clear_obstacle', { cell })) {
+      this._rest('POST', '/api/v1/robot/clear-obstacle', { cell })
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 按当前路线规划批量清除电力预算内的障碍。
+   */
+  executePlanClear() {
+    if (!this._sendCommand('execute_plan_clear', {})) {
+      this._rest('POST', '/api/v1/plan/execute')
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 空电搬回（V1.2）：用户确认后将机器人传送回地图起点并恢复满电。
+   */
+  carryBackHome() {
+    if (!this._sendCommand('carry_home', {})) {
+      this._rest('POST', '/api/v1/robot/carry-home')
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 同步控制类 REST 响应体到本地缓存：state 数据 + 服务端权威地图 + 最新规划。
+   * 后端 _command_payload() 返回 { ...state_dict()["data"], "map": ... }，
+   * 其中地图是清障后的权威版本，必须覆盖本地缓存，否则界面障碍不消失。
+   *
+   * @param {Object} payload - 控制类接口响应体。
+   */
+  _syncCommandPayload(payload) {
+    if (!payload) return
+    const { map, ...stateData } = payload
+    if (map && map.grid && map.width && map.height) {
+      this._map = map
+    }
+    this._state = { ...this._state, ...stateData }
+    this._emitState()
+  }
+
+  /**
+   * 取消当前路线规划（V1.2）：命令后端作废规划缓存。
+   */
+  cancelPlan() {
+    if (!this._sendCommand('cancel_plan', {})) {
+      this._rest('POST', '/api/v1/plan/cancel')
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
    * 切换内置地图预设：经 REST PUT 同步到服务端（服务端会校验并回落起点）。
    * @param {string} key - 预设标识。
    */
@@ -427,6 +508,7 @@ export class RemoteService extends RobotService {
         battery: this._state.battery, speed: this._state.speed, mode: this._state.mode,
         path: (this._state.path || []).map((p) => [...p]),
         sensors: { ...this._state.sensors },
+        plan: this._state.plan || null,
       },
     }
     for (const cb of this._stateListeners) {

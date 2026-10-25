@@ -73,6 +73,24 @@
       </button>
     </div>
 
+    <!-- 目标点标号开关：标号点地图 / 不标号点地图 -->
+    <label class="flex items-center justify-between gap-2 px-1 cursor-pointer select-none">
+      <span class="text-xs text-gray-600 dark:text-gray-300">目标点标号</span>
+      <button
+        type="button"
+        role="switch"
+        :aria-checked="showGoalNumbers ? 'true' : 'false'"
+        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+        :class="showGoalNumbers ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-700'"
+        @click="$emit('toggle-goal-numbers')"
+      >
+        <span
+          class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+          :class="showGoalNumbers ? 'translate-x-[1.15rem]' : 'translate-x-[0.15rem]'"
+        />
+      </button>
+    </label>
+
     <!-- 自动巡检 -->
     <div class="space-y-2">
       <div class="flex gap-2">
@@ -126,6 +144,16 @@
       <p class="text-xs text-gray-500 dark:text-gray-400">
         机器人被障碍卡住时，自动清除前方障碍并恢复正常控制
       </p>
+      <!-- 空电状态：引导用户确认后搬回初始点 -->
+      <button
+        v-if="robot.mode === 'empty'"
+        type="button"
+        class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 flex items-center justify-center gap-2"
+        @click="$emit('carry-home')"
+      >
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M9 22V12h6v10" /></svg>
+        机器人没有电了，搬回初始点
+      </button>
     </div>
 
     <!-- 内置地图 -->
@@ -248,9 +276,9 @@
 <script setup>
 /**
  * 组件功能：控制面板
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-23
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  *
  * 提供手动方向控制、地图编辑模式切换、自动巡检启停与巡检点管理。
  */
@@ -285,6 +313,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  showGoalNumbers: {
+    type: Boolean,
+    default: true,
+  },
 })
 
 const emit = defineEmits([
@@ -302,6 +334,8 @@ const emit = defineEmits([
   'set-edit-mode',
   'clear-goals',
   'remove-goal',
+  'toggle-goal-numbers',
+  'carry-home',
 ])
 
 // --------------------------------------------------------------------------
@@ -359,6 +393,7 @@ const editModes = [
   { key: 'goal', label: '巡检点' },
   { key: 'start', label: '起点' },
   { key: 'charge', label: '充电点' },
+  { key: 'clear', label: '清障' },
 ]
 
 const modeClass = computed(() => {
@@ -366,6 +401,7 @@ const modeClass = computed(() => {
   if (mode === 'patrol') return 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300'
   if (mode === 'charging') return 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
   if (mode === 'blocked') return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+  if (mode === 'empty') return 'bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-800'
   return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
 })
 

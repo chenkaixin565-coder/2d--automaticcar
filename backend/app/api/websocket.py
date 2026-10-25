@@ -112,6 +112,16 @@ def create_ws_router(engine: SimulationEngine, tick_interval_ms: int) -> APIRout
                     engine.reset()
                 elif action == "resolve_fault":
                     engine.resolve_fault()
+                elif action == "plan":
+                    engine.plan_route(payload.get("goal") or [0, 0])
+                elif action == "clear_obstacle":
+                    engine.clear_obstacle_at(payload.get("cell") or [0, 0])
+                elif action == "execute_plan_clear":
+                    engine.execute_plan_clear()
+                elif action == "carry_home":
+                    engine.carry_home()
+                elif action == "cancel_plan":
+                    engine.cancel_plan()
                 else:
                     logger.warning("未知指令: %s", action)
 

@@ -24,9 +24,9 @@
 <script setup>
 /**
  * 组件功能：栅格地图画布
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-23
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  *
  * 使用原生 Canvas 绘制地图栅格、障碍物、机器人、路径与已访问轨迹，
  * 并支持滚轮缩放、拖拽平移、悬停高亮以及地图编辑。
@@ -75,11 +75,27 @@ const props = defineProps({
     type: String,
     default: null,
   },
+  // 一键路线规划结果（V1.2）：{ goal, path, obstacles, clearable, ... }，未规划为 null
+  routePlan: {
+    type: Object,
+    default: null,
+  },
+  // 巡检目标点是否显示编号（V1.2：标号点地图 / 不标号点地图）
+  showGoalNumbers: {
+    type: Boolean,
+    default: true,
+  },
+  // 巡检受阻且无法绕行时前方待清障障碍格 [x, y]（V1.2），无阻碍为 null
+  patrolBlockedCell: {
+    type: Array,
+    default: null,
+  },
 })
 
 const emit = defineEmits([
   'view-change',
   'edit-obstacle',
+  'clear-obstacle',
   'set-goal',
   'set-start',
   'set-charge',
@@ -107,6 +123,7 @@ const editModeLabel = computed(() => {
     goal: '设置巡检点（点击地图添加 / 移除）',
     start: '设置起点（点击地图）',
     charge: '设置充电点（点击地图）',
+    clear: '清障模式（点击障碍清除，每处消耗 5% 电量）',
   }
   return labels[props.editMode] || labels.pan
 })
@@ -130,11 +147,12 @@ onUnmounted(() => {
 })
 
 watch(
-  () => [props.map, props.robot, props.playbackSnapshot, props.scale, props.offset, props.editMode, props.isDark],
+  () => [props.map, props.robot, props.playbackSnapshot, props.scale, props.offset, props.editMode, props.isDark, props.routePlan, props.patrolBlockedCell, props.showGoalNumbers],
   () => {
     ensureAnimInit()
     render()
-    // 状态帧（5Hz）到达后继续平滑动画，直到插值收敛
+    // 状态帧（5Hz）到达后继续平滑动画，直到插值收敛；
+    // 规划路线/受阻标记存在时还需要持续重绘以驱动闪烁动画（见 startAnimLoop）
     startAnimLoop()
   },
   { deep: true }
@@ -186,7 +204,7 @@ function startAnimLoop() {
     animPos.y += (target.y - animPos.y) * t
     animPos.theta = lerpAngle(animPos.theta, target.theta || 0, t)
 
-    // 收敛判定：位置与朝向都足够接近则吸附并停表
+    // 收敛判定：位置与朝向都足够接近则吸附
     const remainTheta = lerpAngle(animPos.theta, target.theta || 0, 1) - animPos.theta
     const settled =
       Math.abs(target.x - animPos.x) < 0.002 &&
@@ -196,13 +214,188 @@ function startAnimLoop() {
       animPos.x = target.x
       animPos.y = target.y
       animPos.theta = target.theta || 0
-      animFrame = null
+      // 规划路线（闪烁虚线）或巡检受阻标记存在时需要持续重绘驱动动画，
+      // 二者都消失后才停表，不做无用空转
+      const continuous = !!(props.routePlan || props.patrolBlockedCell)
+      if (!continuous) {
+        animFrame = null
+      } else {
+        animFrame = requestAnimationFrame(step)
+      }
     } else {
       animFrame = requestAnimationFrame(step)
     }
     render()
   }
   animFrame = requestAnimationFrame(step)
+}
+
+// --------------------------------------------------------------------------
+// 一键路线规划渲染（V1.2）
+// 规划路径分两段绘制：已走过的路段为稳定蓝色虚线，未走的路段为琥珀色
+// 闪烁虚线（lineDashOffset 动画 + 透明度呼吸）；路径上的障碍按电力预算
+// 绘制红色标记（可清）或灰色空心标记（电量不足未纳入）。
+// --------------------------------------------------------------------------
+
+// 已走过的规划路径前缀长度（格数）：只增不减，机器人沿规划路线前进时
+// 对应路段由闪烁虚线切换为稳定虚线；新规划到达时重置为 0
+const walkedPrefix = ref(0)
+
+watch(
+  () => props.routePlan,
+  () => {
+    walkedPrefix.value = 0
+  }
+)
+
+/**
+ * 根据机器人当前位置更新已走前缀：取规划路径上机器人所在格的下标。
+ */
+function updateWalkedPrefix() {
+  const plan = props.routePlan
+  if (!plan || !plan.path || plan.path.length === 0) return
+  const pos = props.playbackSnapshot || props.robot
+  for (let i = plan.path.length - 1; i >= 0; i -= 1) {
+    if (plan.path[i][0] === pos.x && plan.path[i][1] === pos.y) {
+      if (i > walkedPrefix.value) walkedPrefix.value = i
+      return
+    }
+  }
+}
+
+/**
+ * 绘制规划路线：已走段稳定蓝虚线 + 未走段琥珀闪烁虚线。
+ */
+function drawPlannedRoute(ctx) {
+  const plan = props.routePlan
+  if (!plan || !plan.path || plan.path.length < 2) return
+  const total = plan.path.length
+  const walked = Math.min(walkedPrefix.value, total - 1)
+  const phase = (performance.now() % 1000) / 1000
+
+  ctx.save()
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 4 / props.scale
+
+  const traceSegment = (from, to) => {
+    ctx.beginPath()
+    for (let i = from; i <= to; i += 1) {
+      const [x, y] = plan.path[i]
+      const px = (x + 0.5) * CELL_PIXELS
+      const py = (y + 0.5) * CELL_PIXELS
+      if (i === from) {
+        ctx.moveTo(px, py)
+      } else {
+        ctx.lineTo(px, py)
+      }
+    }
+    ctx.stroke()
+  }
+
+  // 已走段：稳定蓝色虚线
+  if (walked >= 1) {
+    ctx.strokeStyle = props.isDark ? '#60a5fa' : '#3b82f6'
+    ctx.setLineDash([8 / props.scale, 5 / props.scale])
+    traceSegment(0, walked)
+  }
+
+  // 未走段：琥珀色闪烁虚线（透明度呼吸 + 流动偏移）
+  if (walked < total - 1) {
+    const pulse = 0.55 + 0.45 * Math.sin(phase * Math.PI * 2)
+    ctx.strokeStyle = `rgba(245, 158, 11, ${pulse.toFixed(3)})`
+    ctx.setLineDash([8 / props.scale, 5 / props.scale])
+    ctx.lineDashOffset = -phase * 13 / props.scale
+    traceSegment(walked, total - 1)
+    ctx.lineDashOffset = 0
+  }
+
+  ctx.setLineDash([])
+  ctx.restore()
+}
+
+/**
+ * 绘制规划路径上的清障目标标记：电力预算内为红色标记（白 ×），
+ * 电量不足未纳入的为灰色空心标记。
+ */
+function drawPlanMarks(ctx) {
+  const plan = props.routePlan
+  if (!plan || !plan.obstacles || plan.obstacles.length === 0) return
+  const clearable = new Set((plan.clearable || []).map(([x, y]) => `${x},${y}`))
+  const phase = (performance.now() % 1000) / 1000
+  const pulse = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2)
+
+  ctx.save()
+  plan.obstacles.forEach(([x, y]) => {
+    const cx = (x + 0.5) * CELL_PIXELS
+    const cy = (y + 0.5) * CELL_PIXELS
+    const r = CELL_PIXELS * 0.3
+    if (clearable.has(`${x},${y}`)) {
+      // 预算内待清障：红色实心 + 白色 ×（呼吸透明度，吸引注意力）
+      ctx.fillStyle = `rgba(239, 68, 68, ${(0.7 + 0.3 * pulse).toFixed(3)})`
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#dc2626'
+      ctx.lineWidth = 2 / props.scale
+      ctx.stroke()
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 2.5 / props.scale
+      ctx.beginPath()
+      ctx.moveTo(cx - r * 0.45, cy - r * 0.45)
+      ctx.lineTo(cx + r * 0.45, cy + r * 0.45)
+      ctx.moveTo(cx + r * 0.45, cy - r * 0.45)
+      ctx.lineTo(cx - r * 0.45, cy + r * 0.45)
+      ctx.stroke()
+    } else {
+      // 电量不足未纳入：灰色空心虚线圆
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.9)'
+      ctx.lineWidth = 2 / props.scale
+      ctx.setLineDash([4 / props.scale, 3 / props.scale])
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+  })
+  ctx.restore()
+}
+
+/**
+ * 绘制巡检受阻标记：橙色呼吸描边 + 中心感叹号，提示可一键清障。
+ */
+function drawPatrolBlocked(ctx) {
+  const cell = props.patrolBlockedCell
+  if (!cell || cell.length < 2) return
+  const [x, y] = cell
+  if (x < 0 || x >= props.map.width || y < 0 || y >= props.map.height) return
+  const px = x * CELL_PIXELS
+  const py = y * CELL_PIXELS
+  const phase = (performance.now() % 1000) / 1000
+  const pulse = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2)
+
+  ctx.save()
+  ctx.strokeStyle = `rgba(249, 115, 22, ${(0.55 + 0.45 * pulse).toFixed(3)})`
+  ctx.lineWidth = 3 / props.scale
+  ctx.setLineDash([5 / props.scale, 3 / props.scale])
+  const inset = 2 / props.scale
+  ctx.strokeRect(px + inset, py + inset, CELL_PIXELS - inset * 2, CELL_PIXELS - inset * 2)
+  ctx.setLineDash([])
+
+  // 中心橙色圆 + 白色感叹号
+  const cx = px + CELL_PIXELS / 2
+  const cy = py + CELL_PIXELS / 2
+  const r = CELL_PIXELS * 0.28
+  ctx.fillStyle = '#f97316'
+  ctx.beginPath()
+  ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.fillStyle = '#ffffff'
+  ctx.font = `bold ${CELL_PIXELS * 0.4}px ui-sans-serif, system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('!', cx, cy + CELL_PIXELS * 0.02)
+  ctx.restore()
 }
 
 // 撞障碍抖动：机器人撞墙（mode 变为 blocked）时触发一次短促抖动。
@@ -266,10 +459,15 @@ function render() {
     drawRobot(ctx, { x: animPos.x, y: animPos.y, theta: animPos.theta }, true)
   } else {
     drawTrail(ctx, props.visitedTrail)
+    drawPlannedRoute(ctx)
     drawPath(ctx, props.robot.path || [])
     drawRobot(ctx, { x: animPos.x, y: animPos.y, theta: animPos.theta }, false)
   }
 
+  // 规划清障标记与巡检受阻标记绘制在机器人之上，保证障碍格上可见
+  drawPlanMarks(ctx)
+  drawPatrolBlocked(ctx)
+  updateWalkedPrefix()
   drawHover(ctx)
 
   ctx.restore()
@@ -298,6 +496,7 @@ function drawGrid(ctx) {
 
 /**
  * 绘制起点、充电点与巡检目标点。
+ * 巡检目标点的编号可通过 showGoalNumbers 开关切换（标号点地图 / 不标号点地图）。
  */
 function drawSpecialCells(ctx) {
   const { start, charge_point: chargePoint, goals } = props.map
@@ -305,13 +504,14 @@ function drawSpecialCells(ctx) {
   drawMarker(ctx, chargePoint, '#f97316', 'C')
   if (goals) {
     goals.forEach((goal, index) => {
-      drawMarker(ctx, goal, '#3b82f6', String(index + 1))
+      // 关闭编号时仍绘制圆点标记位置，仅不显示数字
+      drawMarker(ctx, goal, '#3b82f6', props.showGoalNumbers ? String(index + 1) : '')
     })
   }
 }
 
 /**
- * 绘制单个标记点。
+ * 绘制单个标记点。label 为空字符串时仅绘制圆点（不显示编号）。
  */
 function drawMarker(ctx, pos, color, label) {
   const cx = (pos[0] + 0.5) * CELL_PIXELS
@@ -322,6 +522,8 @@ function drawMarker(ctx, pos, color, label) {
   ctx.beginPath()
   ctx.arc(cx, cy, radius, 0, Math.PI * 2)
   ctx.fill()
+
+  if (!label) return
 
   ctx.fillStyle = '#ffffff'
   ctx.font = `${CELL_PIXELS * 0.35}px ui-sans-serif, system-ui, sans-serif`
@@ -567,6 +769,12 @@ function handleMouseDown(event) {
     const cell = screenToCell(pos.x, pos.y)
     if (inBounds(cell)) {
       emit('set-goal', { x: cell[0], y: cell[1] })
+    }
+  } else if (props.editMode === 'clear') {
+    // 清障模式：仅对障碍格生效，点击后由服务层执行清除（边界墙会被拒绝并提示）
+    const cell = screenToCell(pos.x, pos.y)
+    if (inBounds(cell) && props.map.grid[cell[1]][cell[0]] === 1) {
+      emit('clear-obstacle', { x: cell[0], y: cell[1] })
     }
   } else if (props.editMode === 'start') {
     const cell = screenToCell(pos.x, pos.y)

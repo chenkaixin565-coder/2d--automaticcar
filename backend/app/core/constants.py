@@ -17,6 +17,7 @@ MODE_MANUAL = "manual"      # 手动控制
 MODE_PATROL = "patrol"      # 自动巡检
 MODE_CHARGING = "charging"  # 充电返航
 MODE_BLOCKED = "blocked"    # 碰撞受阻
+MODE_EMPTY = "empty"        # 电量耗尽（等待用户搬回起点）
 
 # 异常类型。
 ANOMALY_LOW_BATTERY = "low_battery"      # 低电量

@@ -1,4 +1,4 @@
-# 智能巡检机器人二维仿真系统 V1.0
+# 智能巡检机器人二维仿真系统 V1.2
 
 > 大学生社团培训班结业项目 —— 全栈版（FastAPI 后端 + Vue 前端，单容器部署）。
 
@@ -24,6 +24,12 @@
 - 详情表面化：鼠标悬停任意栅格即显示坐标与类型（起点/巡检点/障碍/可通行）
 - 真正的地图边界：最外环为固定边界墙——不可绘制、不可擦除、机器人不可穿越，视觉上与普通障碍明确区分（深色斜线纹理），导入地图时自动补齐
 - 移动端通知不遮地图：Toast 在手机端改为文档流内布局（仅桌面端悬浮右上角），同屏最多 2 条
+- **V1.2 一键路线规划**：一键规划到目标点的理论最短路径（可穿越普通障碍，边界墙不可穿越），地图以**闪烁虚线**展示规划路径，机器人走过的路段自动变为**稳定虚线**
+- **V1.2 清障电力预算**：规划路径上的待清障目标以**红色标记**标出（电量不足未纳入的为灰色空心标记）；清障每处消耗 5% 电量，与移动耗电（0.2%/格）合并预算，自动计算电量是否足够到达并决定清障个数
+- **V1.2 巡检主动发现障碍**：巡检路径被占用时优先自动绕行，绕不动则把前方障碍标记为待清障目标（地图橙色标记 + 面板一键清除），**不发告警、不中断巡检**
+- **V1.2 手动清障**：地图「清障」编辑模式下点击任意障碍即可清除（每处扣 5% 电量），边界墙与非障碍格会被拒绝
+- **V1.2 空电搬回**：电量耗尽弹出确认框“机器人已经没有电了，请你将机器人搬回初始点”，选择“是”后才将机器人送回起点并恢复满电
+- **V1.2 标号点 / 不标号点地图**：目标点编号可一键开关，设置持久化到本地
 - 深色模式、响应式布局，手机浏览器可操作
 - 一键部署：Docker Compose 本地单容器（同网段手机可远程控制）/ Render 蓝图公网全栈（手机直接打开链接）
 
@@ -99,21 +105,26 @@ cd frontend && npm install && npm run dev
 | GET | `/api/v1/sensors/latest` | 最新传感器读数 |
 | GET | `/api/v1/events/anomalies` | 异常事件列表 |
 | GET | `/api/v1/patrol/status` | 巡检任务状态 |
+| POST | `/api/v1/plan` | 一键规划路线（穿障最短路径 + 电力预算，V1.2） |
+| POST | `/api/v1/plan/execute` | 按当前规划批量清障（V1.2） |
+| POST | `/api/v1/plan/cancel` | 取消当前路线规划（V1.2） |
+| POST | `/api/v1/robot/clear-obstacle` | 手动清除指定障碍格（V1.2） |
+| POST | `/api/v1/robot/carry-home` | 空电后将机器人搬回起点（V1.2） |
 | WS  | `/api/v1/ws` | 状态帧（200ms）/ 异常·通知事件帧 / 指令下行 |
 
-WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"reset", payload:{...}}`。
+WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"reset"|"resolve_fault"|"plan"|"clear_obstacle"|"execute_plan_clear"|"carry_home"|"cancel_plan", payload:{...}}`。
 
 ## 目录结构
 
 ```
 project-root/
 ├── frontend/                # Vue 前端工程
-│   ├── src/services/        # 数据服务层（RobotService 接口 + Simulated/Remote 实现）
+│   ├── src/services/        # 数据服务层（RobotService 接口 + Simulated/Remote 实现 + routePlanner 穿障规划）
 │   └── src/components/      # 地图、控制、状态等组件
 ├── backend/                 # FastAPI 后端
 │   ├── app/
 │   │   ├── algorithms/      # A* 寻路
-│   │   ├── services/        # 仿真引擎、传感器、异常检测、巡检调度
+│   │   ├── services/        # 仿真引擎、传感器、异常检测、巡检调度、路线规划
 │   │   ├── api/             # REST 与 WebSocket 路由
 │   │   └── core/            # 配置、常量、异常
 │   ├── static/dist/         # 前端构建产物（由 Docker 多阶段注入）
@@ -121,6 +132,7 @@ project-root/
 ├── deploy/                  # Dockerfile 与 docker-compose.yml
 ├── render.yaml              # Render 一键部署蓝图（全栈公网）
 ├── docs/                    # 设计文档与部署指南
+├── CHANGELOG.md             # 版本更新日志
 ├── run.sh / run.bat         # 非容器降级启动脚本
 └── README.md
 ```

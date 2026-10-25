@@ -1,8 +1,8 @@
 /**
  * 模块功能：本地仿真器服务实现
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-23
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  *
  * 本模块在前端完全模拟后端行为：200ms 推进一次仿真 tick，生成传感器数据、
  * 检测异常、执行巡检任务，并通过 onState/onEvent 推送与后端 WebSocket 协议
@@ -11,6 +11,7 @@
 
 import { RobotService } from './robotService.js'
 import { astar } from './astar.js'
+import { buildPlan } from './routePlanner.js'
 import { MAP_PRESETS, getPreset } from './mapPresets.js'
 import { enforceBorder, isBoundaryCell } from '../utils/mapBoundary.js'
 
@@ -37,6 +38,9 @@ const CHARGE_RATE = 1.0
 
 /** 低电量告警阈值。 */
 const LOW_BATTERY_THRESHOLD = 20.0
+
+/** 每清除一处障碍消耗的电量百分比（与后端 CLEAR_OBSTACLE_COST 一致）。 */
+const CLEAR_OBSTACLE_COST = 5.0
 
 /** 过热告警阈值（摄氏度）。 */
 const OVERHEAT_THRESHOLD = 60.0
@@ -71,6 +75,12 @@ export class SimulatedService extends RobotService {
     this._internalTemp = 35.0
     this._anomalyCooldowns = new Map()
     this._preChargeMode = 'manual'
+    // 一键路线规划结果（含电力预算），未规划时为 null，随 state 帧下发
+    this._plan = null
+    // 低电量且充电点不可达的告警去重标记
+    this._chargeUnreachableNotified = false
+    // 本 tick 是否发生移动（电量在 tick 末尾按此结算，与后端一致）
+    this._movedThisTick = false
 
     this._initRobotState()
     this._initPatrolState()
@@ -111,6 +121,8 @@ export class SimulatedService extends RobotService {
       currentGoalIndex: 0,
       totalGoals: 0,
       pathRemain: 0,
+      // 巡检受阻且无法绕行时，前方待清障障碍格 [x, y]；无阻碍为 null
+      blockedBy: null,
     }
   }
 
@@ -135,9 +147,21 @@ export class SimulatedService extends RobotService {
    * 单个仿真 tick：推进状态、消耗电量、更新传感器、检测异常。
    */
   _tick() {
-    this._updateBatteryAndTemperature(false)
+    // 空电状态：不移动、不巡检、不再耗电，仅保持传感器刷新，
+    // 等待用户在弹窗中确认后搬回起点
+    if (this._state.mode === 'empty') {
+      this._state.speed = 0.0
+      this._updateSensors()
+      this._recordSnapshot()
+      this._emitState()
+      return
+    }
 
-    // 低电量优先处理：自动返回充电点
+    // 本 tick 是否发生移动由 _moveTo 打标，电量在 tick 末尾统一结算，
+    // 与后端 simulation_engine.tick 的“移动/静止/充电三种速率”一致
+    this._movedThisTick = false
+
+    // 低电量优先处理：充电点可达才自动返回充电点
     if (this._state.battery < LOW_BATTERY_THRESHOLD && this._state.mode !== 'charging') {
       this._enterChargingMode()
     }
@@ -151,18 +175,40 @@ export class SimulatedService extends RobotService {
       this._state.speed = 0.0
     }
 
+    this._updateBatteryAndTemperature(this._movedThisTick)
     this._updateSensors()
     this._recordSnapshot()
     this._emitState()
+
+    // 电量耗尽：进入空电状态并停止移动，等待用户确认后搬回起点
+    if (this._state.battery <= 0 && this._state.mode !== 'empty') {
+      this._state.mode = 'empty'
+      this._state.speed = 0.0
+      this._state.path = []
+      this._emitEvent('notice', { message: '机器人电量耗尽，已停止移动' })
+      this._emitState()
+    }
   }
 
   /**
    * 进入充电模式：记录先前模式并规划到充电点的路径。
+   * 充电点不可达时不返航（告警一次），电量将继续耗尽直至空电。
    */
   _enterChargingMode() {
+    const pathResult = astar(this._map.grid, [this._state.x, this._state.y], this._map.charge_point)
+    if (pathResult.path.length === 0) {
+      if (!this._chargeUnreachableNotified) {
+        this._chargeUnreachableNotified = true
+        this._addAnomaly(
+          'low_battery',
+          '电量过低且充电点不可达，电量将持续耗尽',
+          [this._state.x, this._state.y]
+        )
+      }
+      return
+    }
     this._preChargeMode = this._state.mode
     this._state.mode = 'charging'
-    const pathResult = astar(this._map.grid, [this._state.x, this._state.y], this._map.charge_point)
     this._state.path = pathResult.path
     this._addAnomaly(
       'low_battery',
@@ -181,6 +227,7 @@ export class SimulatedService extends RobotService {
       this._state.speed = 0.0
       if (this._state.battery >= 90.0) {
         this._state.mode = this._preChargeMode === 'patrol' && this._patrol.currentGoalIndex < this._patrol.totalGoals ? 'patrol' : 'manual'
+        this._chargeUnreachableNotified = false
         this._emitEvent('notice', { message: '充电完成，继续当前任务' })
       }
     } else {
@@ -210,6 +257,8 @@ export class SimulatedService extends RobotService {
 
   /**
    * 沿当前路径前进一步。
+   * 巡检模式下路径格被占用时不触发撞障告警，转 _handlePatrolBlocked
+   * 优先绕行、绕不动则标记待清障目标（V1.2）。
    */
   _followPath() {
     const next = this._state.path[1]
@@ -220,8 +269,42 @@ export class SimulatedService extends RobotService {
       if (this._patrol.running) {
         this._patrol.pathRemain = Math.max(0, this._state.path.length - 1)
       }
+    } else if (this._patrol.running) {
+      this._handlePatrolBlocked(next)
     } else {
       this._setBlocked()
+    }
+  }
+
+  /**
+   * 巡检路径受阻处理（V1.2）：优先重规划绕行；无法绕行时把前方障碍
+   * 标记为“待清障目标”，由用户一键清除后继续巡检，不中断巡检、不报障告警。
+   *
+   * @param {number[]} blockedCell - 被占用的路径格 [x, y]。
+   */
+  _handlePatrolBlocked(blockedCell) {
+    const goal = this._patrol.goals[this._patrol.currentGoalIndex]
+    if (goal) {
+      const detour = astar(this._map.grid, [this._state.x, this._state.y], goal)
+      if (detour.path.length > 1) {
+        this._state.path = detour.path
+        this._patrol.pathRemain = Math.max(0, detour.path.length - 1)
+        if (this._patrol.blockedBy) {
+          this._patrol.blockedBy = null
+          this._emitEvent('notice', { message: '已自动绕开障碍，继续巡检' })
+        }
+        return
+      }
+    }
+    const changed =
+      !this._patrol.blockedBy ||
+      this._patrol.blockedBy[0] !== blockedCell[0] ||
+      this._patrol.blockedBy[1] !== blockedCell[1]
+    if (changed) {
+      this._patrol.blockedBy = [blockedCell[0], blockedCell[1]]
+      this._emitEvent('notice', {
+        message: `巡检受阻：前方 [${blockedCell[0]}, ${blockedCell[1]}] 有障碍，可一键清障（不会中断巡检）`,
+      })
     }
   }
 
@@ -237,6 +320,7 @@ export class SimulatedService extends RobotService {
     this._state.y = next[1]
     this._state.theta = this._directionToTheta(dx, dy)
     this._state.speed = 1.0
+    this._movedThisTick = true
     this._visitedTrail.push([next[0], next[1]])
   }
 
@@ -284,10 +368,16 @@ export class SimulatedService extends RobotService {
   /**
    * 更新电量与内部温度。
    *
+   * 计费规则与后端一致：仅“已到达充电点且静止充电”时不耗电；
+   * 返航途中与普通移动一样按格计费，静止时按 idle 速率漏电。
+   *
    * @param {boolean} moving - 本 tick 是否发生移动。
    */
   _updateBatteryAndTemperature(moving) {
-    if (this._state.mode !== 'charging') {
+    const charge = this._map.charge_point
+    const atChargePoint = this._state.x === charge[0] && this._state.y === charge[1]
+    const chargingAtPoint = this._state.mode === 'charging' && !moving && atChargePoint
+    if (!chargingAtPoint) {
       const cost = moving ? BATTERY_MOVE_COST : BATTERY_IDLE_COST
       this._state.battery = Math.max(0.0, parseFloat((this._state.battery - cost).toFixed(2)))
     }
@@ -515,6 +605,7 @@ export class SimulatedService extends RobotService {
         mode: this._state.mode,
         path: this._state.path.map((p) => [...p]),
         sensors: { ...this._state.sensors },
+        plan: this._plan,
       },
     }
     for (const callback of this._stateListeners) {
@@ -638,6 +729,8 @@ export class SimulatedService extends RobotService {
     enforceBorder(map.grid, map.width, map.height)
     this._map = map
     this._presetKey = null
+    // 地图整体变更后旧规划失去意义，直接作废
+    this._plan = null
     this._saveMap()
     this._savePresetKey()
   }
@@ -656,6 +749,7 @@ export class SimulatedService extends RobotService {
     enforceBorder(presetMap.grid, presetMap.width, presetMap.height)
     this._map = presetMap
     this._presetKey = key
+    this._plan = null
     this._saveMap()
     this._savePresetKey()
     // 机器人复位到新地图起点，避免停留在可能变为障碍的位置
@@ -684,6 +778,11 @@ export class SimulatedService extends RobotService {
    * @param {number} dy - y 方向增量。
    */
   move(dx, dy) {
+    if (this._state.mode === 'empty') {
+      this._emitEvent('notice', { message: '电量耗尽，无法移动；请将机器人搬回初始点' })
+      this._emitState()
+      return
+    }
     if (dx === 0 && dy === 0) {
       return
     }
@@ -714,6 +813,8 @@ export class SimulatedService extends RobotService {
     this._initPatrolState()
     this._internalTemp = 35.0
     this._snapshots = []
+    this._plan = null
+    this._chargeUnreachableNotified = false
     this._updateSensors()
     this._recordSnapshot()
     this._emitState()
@@ -759,6 +860,164 @@ export class SimulatedService extends RobotService {
   }
 
   /**
+   * 一键规划路线（V1.2）：理论最短路径（可穿越普通障碍）+ 电力预算内的待清障目标。
+   * 规划结果随 state 帧下发，界面据此绘制闪烁虚线与红色清障标记。
+   *
+   * @param {number[]} goal - 目标点坐标 [x, y]。
+   * @returns {Object} 路线规划对象（字段与后端 build_plan 一致）。
+   */
+  planRoute(goal) {
+    const plan = buildPlan(
+      this._map.grid,
+      [this._state.x, this._state.y],
+      goal,
+      this._state.battery,
+      BATTERY_MOVE_COST,
+      CLEAR_OBSTACLE_COST
+    )
+    if (plan.path.length === 0) {
+      this._plan = null
+      this._emitEvent('notice', { message: plan.message || '无法规划路线：目标不可达' })
+      this._emitState()
+      return plan
+    }
+    this._plan = plan
+    this._emitEvent('notice', {
+      message: `路线已规划：全程 ${plan.path.length - 1} 格，待清障 ${plan.obstacles.length} 个，预计耗电 ${plan.total_cost.toFixed(1)}%`,
+    })
+    this._emitState()
+    return plan
+  }
+
+  /**
+   * 地图/电量变化后按原目标重算路线规划（无规划时跳过，与后端 _refresh_plan 对应）。
+   */
+  _refreshPlan() {
+    if (!this._plan) {
+      return
+    }
+    this._plan = buildPlan(
+      this._map.grid,
+      [this._state.x, this._state.y],
+      this._plan.goal,
+      this._state.battery,
+      BATTERY_MOVE_COST,
+      CLEAR_OBSTACLE_COST
+    )
+  }
+
+  /**
+   * 清除指定障碍格（V1.2 手动清障 / 规划内清障）。
+   *
+   * 真正的边界：最外环边界墙不可清除；空电状态下不可执行；非障碍格拒绝。
+   * 每清除一处扣除 CLEAR_OBSTACLE_COST 电量，并刷新当前路线规划。
+   *
+   * @param {number[]} cell - 障碍坐标 [x, y]。
+   */
+  clearObstacleAt(cell) {
+    if (this._state.mode === 'empty') {
+      this._emitEvent('notice', { message: '电量耗尽，无法清障；请将机器人搬回初始点' })
+      this._emitState()
+      return
+    }
+    const [x, y] = cell
+    if (x < 0 || x >= this._map.width || y < 0 || y >= this._map.height) {
+      this._emitEvent('notice', { message: '坐标越界，无法清障' })
+      this._emitState()
+      return
+    }
+    if (isBoundaryCell(x, y, this._map.width, this._map.height)) {
+      this._emitEvent('notice', { message: '该位置是固定边界墙，无法清除' })
+      this._emitState()
+      return
+    }
+    if (this._map.grid[y][x] !== 1) {
+      this._emitEvent('notice', { message: `位置 [${x}, ${y}] 没有障碍，无需清除` })
+      this._emitState()
+      return
+    }
+    this._map.grid[y][x] = 0
+    this._state.battery = Math.max(0.0, parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2)))
+    this._emitEvent('notice', { message: `已清除障碍 [${x}, ${y}]，消耗电量 ${CLEAR_OBSTACLE_COST.toFixed(0)}%` })
+    // 清除的正是巡检受阻点时解除标记，巡检将在下一 tick 恢复推进
+    if (this._patrol.blockedBy && this._patrol.blockedBy[0] === x && this._patrol.blockedBy[1] === y) {
+      this._patrol.blockedBy = null
+    }
+    this._saveMap()
+    this._refreshPlan()
+    this._emitState()
+  }
+
+  /**
+   * 按当前路线规划批量清除电力预算内的障碍（每处扣除清障电量）。
+   */
+  executePlanClear() {
+    if (this._state.mode === 'empty') {
+      this._emitEvent('notice', { message: '电量耗尽，无法清障；请将机器人搬回初始点' })
+      this._emitState()
+      return
+    }
+    if (!this._plan || this._plan.clearable.length === 0) {
+      this._emitEvent('notice', { message: '当前没有可执行的清障目标' })
+      this._emitState()
+      return
+    }
+    let cleared = 0
+    for (const [x, y] of this._plan.clearable) {
+      if (isBoundaryCell(x, y, this._map.width, this._map.height)) {
+        continue
+      }
+      if (this._map.grid[y][x] !== 1) {
+        continue
+      }
+      this._map.grid[y][x] = 0
+      this._state.battery = Math.max(
+        0.0,
+        parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2))
+      )
+      cleared += 1
+    }
+    this._patrol.blockedBy = null
+    this._emitEvent('notice', {
+      message: `已按规划清除 ${cleared} 处障碍，共耗电 ${(cleared * CLEAR_OBSTACLE_COST).toFixed(0)}%`,
+    })
+    this._saveMap()
+    this._refreshPlan()
+    this._emitState()
+  }
+
+  /**
+   * 空电搬回（V1.2）：用户确认后将机器人传送回地图起点并恢复满电。
+   * 与后端 carry_home 行为一致：停巡检、回起点、满电、手动模式、作废规划。
+   */
+  carryBackHome() {
+    this._patrol.running = false
+    const start = this._map.start
+    this._state.x = start[0]
+    this._state.y = start[1]
+    this._state.theta = 0
+    this._state.battery = 100.0
+    this._state.mode = 'manual'
+    this._state.path = []
+    this._plan = null
+    this._chargeUnreachableNotified = false
+    this._visitedTrail.push([start[0], start[1]])
+    this._updateSensors()
+    this._recordSnapshot()
+    this._emitState()
+    this._emitEvent('notice', { message: '机器人已搬回初始点，电量已恢复 100%' })
+  }
+
+  /**
+   * 取消当前路线规划（V1.2）：作废规划缓存，界面停止展示闪烁虚线与标记。
+   */
+  cancelPlan() {
+    this._plan = null
+    this._emitEvent('notice', { message: '路线规划已取消' })
+    this._emitState()
+  }
+
+  /**
    * 计算 A* 路径。
    * @param {number[]} start - 起点 [x, y]。
    * @param {number[]} goal - 终点 [x, y]。
@@ -785,6 +1044,7 @@ export class SimulatedService extends RobotService {
       currentGoalIndex: 0,
       totalGoals: targetGoals.length,
       pathRemain: 0,
+      blockedBy: null,
     }
     this._state.mode = 'patrol'
     this._planToCurrentGoal()
@@ -806,7 +1066,8 @@ export class SimulatedService extends RobotService {
 
   /**
    * 获取当前巡检状态。
-   * @returns {Object} { running, current_goal, progress, path_remain }。
+   * @returns {Object} { running, current_goal, progress, path_remain, blocked_by }。
+   *   blocked_by 为巡检受阻且无法绕行时前方待清障障碍格 [x, y]，无阻碍为 null。
    */
   getPatrolStatus() {
     const currentGoal =
@@ -822,6 +1083,7 @@ export class SimulatedService extends RobotService {
       current_goal: currentGoal,
       progress,
       path_remain: this._patrol.pathRemain,
+      blocked_by: this._patrol.blockedBy,
     }
   }
 

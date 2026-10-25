@@ -1,8 +1,8 @@
 /**
  * 模块功能：机器人数据服务层抽象接口
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-23
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  *
  * 本模块定义前端与后端/仿真器交互的统一契约。所有界面组件只依赖 RobotService，
  * 具体实现可以是本地 SimulatedService，也可以是下一阶段的 RemoteService（REST + WebSocket）。
@@ -66,6 +66,54 @@ export class RobotService {
   }
 
   /**
+   * 一键规划路线（V1.2）：计算到目标点的穿障最短路径，并按当前电量决定
+   * 可纳入的待清障障碍个数（移动耗电与清障耗电合并预算）。
+   *
+   * @param {number[]} goal - 目标点坐标 [x, y]。
+   * @returns {Promise<Object>|Object} 路线规划对象
+   *   { goal, path, obstacles, clearable, move_cost, clear_cost, total_cost,
+   *     battery, clear_unit_cost, reachable, enough, message }。
+   */
+  planRoute() {
+    throw new Error('子类必须实现 planRoute 方法')
+  }
+
+  /**
+   * 清除指定障碍格（V1.2 手动清障 / 规划内清障）。
+   * 边界墙、非障碍格与空电状态会被拒绝；每处扣除固定清障电量。
+   *
+   * @param {number[]} cell - 障碍坐标 [x, y]。
+   * @returns {Promise<void>|void}
+   */
+  clearObstacleAt() {
+    throw new Error('子类必须实现 clearObstacleAt 方法')
+  }
+
+  /**
+   * 按当前路线规划批量清除电力预算内的障碍（V1.2）。
+   * @returns {Promise<void>|void}
+   */
+  executePlanClear() {
+    throw new Error('子类必须实现 executePlanClear 方法')
+  }
+
+  /**
+   * 空电搬回（V1.2）：用户确认后将机器人传送回地图起点并恢复满电。
+   * @returns {Promise<void>|void}
+   */
+  carryBackHome() {
+    throw new Error('子类必须实现 carryBackHome 方法')
+  }
+
+  /**
+   * 取消当前路线规划（V1.2）：界面停止展示闪烁虚线与清障标记。
+   * @returns {Promise<void>|void}
+   */
+  cancelPlan() {
+    throw new Error('子类必须实现 cancelPlan 方法')
+  }
+
+  /**
    * 切换内置地图预设（mapPresets.js 中的 factory / warehouse / dense）。
    * @param {string} _key - 预设标识。
    * @returns {Promise<void>|void}
@@ -120,7 +168,8 @@ export class RobotService {
 
   /**
    * 获取当前巡检状态。
-   * @returns {Promise<Object>|Object} { running, current_goal, progress, path_remain }。
+   * @returns {Promise<Object>|Object} { running, current_goal, progress, path_remain, blocked_by }。
+   *   blocked_by 为巡检受阻且无法绕行时前方待清障障碍格 [x, y]，无阻碍为 null（V1.2）。
    */
   getPatrolStatus() {
     throw new Error('子类必须实现 getPatrolStatus 方法')
@@ -146,7 +195,7 @@ export class RobotService {
    * 注册状态推送回调。
    *
    * 回调函数接收的帧格式必须与后端 WebSocket state 帧一致：
-   * { type: 'state', data: { x, y, theta, battery, speed, mode, path, sensors: { front, left, right, temperature } } }
+   * { type: 'state', data: { x, y, theta, battery, speed, mode, path, sensors: { front, left, right, temperature }, patrol, plan } }
    *
    * @param {Function} callback - 状态回调函数。
    * @returns {Function} 取消订阅函数。

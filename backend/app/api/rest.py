@@ -13,7 +13,7 @@ import logging
 from fastapi import APIRouter, Query
 
 from app.models.map import GridMap
-from app.models.robot import MoveCommand, PatrolStartCommand
+from app.models.robot import ClearObstacleCommand, MoveCommand, PatrolStartCommand, PlanGoalCommand
 from app.services.simulation_engine import SimulationEngine
 
 logger = logging.getLogger("api.rest")
@@ -126,6 +126,54 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
         :return: {'remove': [x, y] | null, 'message': str}
         """
         return engine.find_min_obstacle(goal)
+
+    @router.post("/plan", summary="一键规划路线（穿障最短路径 + 电力预算）")
+    async def plan_route(command: PlanGoalCommand) -> dict:
+        """
+        规划从机器人到目标巡检点的路线：理论最短路径（穿障），
+        路径上的障碍按电力预算标记为待清障目标。
+
+        :param command: {'goal': [x, y]}。
+        :return: 路线规划字典（path/obstacles/clearable/电力预算等）。
+        """
+        return engine.plan_route(command.goal)
+
+    @router.post("/plan/cancel", summary="取消当前路线规划")
+    async def plan_cancel() -> dict:
+        """
+        取消当前路线规划：界面停止展示闪烁虚线与清障标记。
+
+        :return: state 帧数据 + 权威地图。
+        """
+        return engine.cancel_plan()
+
+    @router.post("/plan/execute", summary="按当前规划批量清障")
+    async def plan_execute() -> dict:
+        """
+        清除当前路线规划中电力预算内的全部障碍（每处扣减清障电量）。
+
+        :return: state 帧数据 + 权威地图。
+        """
+        return engine.execute_plan_clear()
+
+    @router.post("/robot/clear-obstacle", summary="手动清除指定障碍格")
+    async def robot_clear_obstacle(command: ClearObstacleCommand) -> dict:
+        """
+        手动清障：清除指定障碍格并扣减清障电量（边界墙拒绝）。
+
+        :param command: {'cell': [x, y]}。
+        :return: state 帧数据 + 权威地图。
+        """
+        return engine.clear_obstacle_at(command.cell)
+
+    @router.post("/robot/carry-home", summary="空电后将机器人搬回起点")
+    async def robot_carry_home() -> dict:
+        """
+        电量耗尽后把机器人搬回初始点并恢复满电。
+
+        :return: state 帧数据 + 权威地图。
+        """
+        return engine.carry_home()
 
     @router.get("/robot/trail", summary="获取机器人轨迹")
     async def robot_trail() -> dict:

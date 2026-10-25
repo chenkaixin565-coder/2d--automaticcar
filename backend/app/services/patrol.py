@@ -86,6 +86,8 @@ class PatrolManager:
         self.current_index: int = 0
         self.completed: int = 0
         self.path_remain: int = 0
+        # 巡检受阻且无法绕行时，前方待清障障碍格 [x, y]；无阻碍为 None。
+        self.blocked_by: list[int] | None = None
 
     def start(self, goals: list[tuple[int, int]]) -> None:
         """
@@ -98,6 +100,7 @@ class PatrolManager:
         self.current_index = 0
         self.completed = 0
         self.path_remain = 0
+        self.blocked_by = None
 
     def stop(self) -> None:
         """停止巡检任务并清空状态。"""
@@ -106,6 +109,7 @@ class PatrolManager:
         self.current_index = 0
         self.completed = 0
         self.path_remain = 0
+        self.blocked_by = None
 
     def current_goal(self) -> tuple[int, int] | None:
         """
@@ -134,7 +138,7 @@ class PatrolManager:
         """
         导出与公共契约一致的巡检状态字典。
 
-        :return: {'running', 'current_goal', 'progress', 'path_remain'}
+        :return: {'running', 'current_goal', 'progress', 'path_remain', 'blocked_by'}
         """
         goal = self.current_goal()
         return {
@@ -142,4 +146,5 @@ class PatrolManager:
             "current_goal": list(goal) if goal else None,
             "progress": self.progress,
             "path_remain": self.path_remain,
+            "blocked_by": list(self.blocked_by) if self.blocked_by else None,
         }

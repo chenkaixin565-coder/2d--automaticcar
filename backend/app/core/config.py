@@ -27,6 +27,9 @@ class Settings:
     # 低电量告警阈值（百分比），低于该值自动返航充电。
     low_battery_threshold: float = float(os.getenv("LOW_BATTERY_THRESHOLD", "20.0"))
 
+    # 手动/按规划清除一处障碍消耗的电量百分比。
+    clear_obstacle_cost: float = float(os.getenv("CLEAR_OBSTACLE_COST", "5.0"))
+
     # 充电每 tick 恢复的电量百分比。
     charge_rate: float = float(os.getenv("CHARGE_RATE", "1.0"))
 

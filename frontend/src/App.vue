@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V1.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V1.2</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -52,8 +52,12 @@
           :edit-mode="editMode"
           :is-dark="isDark"
           :robot-avatar="robotAvatar"
+          :route-plan="routePlan"
+          :show-goal-numbers="showGoalNumbers"
+          :patrol-blocked-cell="patrolBlockedCell"
           @view-change="onViewChange"
           @edit-obstacle="onEditObstacle"
+          @clear-obstacle="onClearObstacle"
           @set-goal="onSetGoal"
           @set-start="onSetStart"
           @set-charge="onSetCharge"
@@ -115,6 +119,7 @@
           :map-goals="map.goals"
           :map-preset="mapPresetKey"
           :has-avatar="!!robotAvatar"
+          :show-goal-numbers="showGoalNumbers"
           @move="onMove"
           @reset="onReset"
           @resolve-fault="onResolveFault"
@@ -129,6 +134,19 @@
           @set-edit-mode="editMode = $event"
           @clear-goals="onClearGoals"
           @remove-goal="onRemoveGoal"
+          @toggle-goal-numbers="onToggleGoalNumbers"
+          @carry-home="onCarryHomePrompt"
+        />
+        <RoutePlanPanel
+          :plan="routePlan"
+          :map-goals="map.goals"
+          :patrol-status="patrolStatus"
+          :robot="robot"
+          @plan-route="onPlanRoute"
+          @execute-plan-clear="onExecutePlanClear"
+          @cancel-plan="onCancelPlan"
+          @start-patrol="onStartPatrol"
+          @clear-blocked="onClearBlockedObstacle"
         />
         <Joystick class="hidden" @move="onMove" />
         <StatusDashboard :robot="robot" :temperature-history="temperatureHistory" />
@@ -158,6 +176,7 @@
         @set-edit-mode="editMode = $event"
         @fit-map="fitMap"
         @toggle-detail="drawerOpen = !drawerOpen"
+        @open-plan="drawerOpen = true"
       />
 
       <!-- 移动端详情抽屉 -->
@@ -167,6 +186,17 @@
       >
         <div class="w-10 h-1.5 mx-auto my-2 rounded-full bg-gray-300 dark:bg-gray-700" />
         <div class="flex flex-col gap-3 p-3 pb-6">
+          <RoutePlanPanel
+            :plan="routePlan"
+            :map-goals="map.goals"
+            :patrol-status="patrolStatus"
+            :robot="robot"
+            @plan-route="onPlanRoute"
+            @execute-plan-clear="onExecutePlanClear"
+            @cancel-plan="onCancelPlan"
+            @start-patrol="onStartPatrol"
+            @clear-blocked="onClearBlockedObstacle"
+          />
           <StatusDashboard :robot="robot" :temperature-history="temperatureHistory" />
           <PlaybackBar
             :snapshots="snapshots"
@@ -180,15 +210,22 @@
         </div>
       </div>
     </main>
+
+    <!-- 空电搬回确认弹窗（V1.2） -->
+    <EmptyBatteryModal
+      :visible="showEmptyModal"
+      @confirm="onCarryHomeConfirm"
+      @dismiss="showEmptyModal = false"
+    />
   </div>
 </template>
 
 <script setup>
 /**
  * 组件功能：应用主布局与业务编排
- * 作者：智能巡检机器人二维仿真系统 V1.0 前端开发组
- * 日期：2026-10-23
- * 版本：V1.0
+ * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
+ * 日期：2026-10-25
+ * 版本：V1.2
  *
  * 负责组装地图画布、控制面板、状态仪表盘、告警列表与回放组件，
  * 并通过 RobotService 与本地仿真器交互。
@@ -207,8 +244,13 @@ import StatusDashboard from './components/StatusDashboard.vue'
 import AlertList from './components/AlertList.vue'
 import PlaybackBar from './components/PlaybackBar.vue'
 import MobileControls from './components/MobileControls.vue'
+import RoutePlanPanel from './components/RoutePlanPanel.vue'
+import EmptyBatteryModal from './components/EmptyBatteryModal.vue'
 
 const SETTINGS_KEY = 'irm_settings_v1'
+
+/** 目标点标号开关的持久化键名（V1.2：标号点地图 / 不标号点地图）。 */
+const GOAL_NUMBERS_KEY = 'irm_goal_numbers_v1'
 
 // 数据源展示标签：后端连接成功显示"后端服务"，否则"离线仿真"
 const dataModeLabel = computed(() => (usingBackend.value ? '后端服务' : '离线仿真'))
@@ -250,6 +292,12 @@ const robot = ref({
 })
 const visitedTrail = ref([])
 const patrolStatus = ref(service.getPatrolStatus())
+// 一键路线规划结果（V1.2）：取自 state 帧的 plan 字段，本地/后端双模式一致
+const routePlan = ref(null)
+// 巡检目标点标号开关（V1.2：标号点地图 / 不标号点地图），localStorage 持久化
+const showGoalNumbers = ref(true)
+// 空电搬回确认弹窗显示状态（V1.2）
+const showEmptyModal = ref(false)
 const anomalies = ref(service.getAnomalies())
 const temperatureHistory = ref([])
 const snapshots = ref([])
@@ -283,6 +331,9 @@ const hoverCellType = computed(() => {
 // 移动端抽屉
 const drawerOpen = ref(false)
 
+// 巡检受阻格（V1.2）：巡检受阻且无法绕行时前方待清障障碍格，驱动地图标记
+const patrolBlockedCell = computed(() => patrolStatus.value.blocked_by || null)
+
 // 回放
 const playbackIndex = ref(0)
 const playbackPlaying = ref(false)
@@ -309,6 +360,7 @@ let unsubscribeEvent = null
 
 onMounted(() => {
   loadTheme()
+  loadGoalNumbers()
   fitMap()
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('resize', handleResize)
@@ -316,6 +368,8 @@ onMounted(() => {
 
   unsubscribeState = service.onState((frame) => {
     robot.value = frame.data
+    // 路线规划（V1.2）：无规划时帧内为 null
+    routePlan.value = frame.data.plan || null
     visitedTrail.value = service.getVisitedTrail()
     patrolStatus.value = service.getPatrolStatus()
     temperatureHistory.value.push(frame.data.sensors.temperature)
@@ -391,6 +445,30 @@ function applyTheme() {
     document.documentElement.classList.add('dark')
   } else {
     document.documentElement.classList.remove('dark')
+  }
+}
+
+// --------------------------------------------------------------------------
+// 目标点标号开关（V1.2）
+// --------------------------------------------------------------------------
+
+function loadGoalNumbers() {
+  try {
+    const stored = localStorage.getItem(GOAL_NUMBERS_KEY)
+    if (stored !== null) {
+      showGoalNumbers.value = stored === '1'
+    }
+  } catch {
+    showGoalNumbers.value = true
+  }
+}
+
+function onToggleGoalNumbers() {
+  showGoalNumbers.value = !showGoalNumbers.value
+  try {
+    localStorage.setItem(GOAL_NUMBERS_KEY, showGoalNumbers.value ? '1' : '0')
+  } catch (error) {
+    console.warn('目标点标号设置保存失败：', error)
   }
 }
 
@@ -471,6 +549,10 @@ watch(
     if (mode === 'blocked' && prev !== 'blocked') {
       addToast('stuck', '机器人被障碍物卡住，可点击“一键排障”清除前方障碍')
     }
+    // 电量耗尽（V1.2）：弹出搬回确认弹窗，用户选择"是"后才送回初始点
+    if (mode === 'empty' && prev !== 'empty') {
+      showEmptyModal.value = true
+    }
   }
 )
 
@@ -517,6 +599,58 @@ function onStartPatrol() {
 
 function onStopPatrol() {
   service.stopPatrol()
+}
+
+// --------------------------------------------------------------------------
+// 一键路线规划与清障（V1.2）
+// --------------------------------------------------------------------------
+
+/**
+ * 一键规划路线：服务层计算穿障最短路径与电力预算内的待清障目标，
+ * 结果随 state 帧回传（routePlan），地图绘制闪烁虚线与红色标记。
+ *
+ * @param {number[]} goal - 目标巡检点 [x, y]。
+ */
+function onPlanRoute(goal) {
+  service.planRoute(goal)
+}
+
+/** 按当前规划批量清除电力预算内的障碍。 */
+function onExecutePlanClear() {
+  service.executePlanClear()
+}
+
+/** 取消当前路线规划。 */
+function onCancelPlan() {
+  service.cancelPlan()
+}
+
+/**
+ * 清障模式下点击地图障碍格：由服务层执行清除（边界墙 / 非障碍 / 空电会被拒绝并提示）。
+ *
+ * @param {Object} payload - { x, y } 障碍格坐标。
+ */
+function onClearObstacle({ x, y }) {
+  service.clearObstacleAt([x, y])
+}
+
+/** 清除巡检受阻点（自动巡检发现障碍且无法绕行时的一键清障）。 */
+function onClearBlockedObstacle() {
+  const blocked = patrolStatus.value.blocked_by
+  if (blocked) {
+    service.clearObstacleAt([blocked[0], blocked[1]])
+  }
+}
+
+/** 空电状态下的“搬回初始点”入口：先弹确认框，避免误触。 */
+function onCarryHomePrompt() {
+  showEmptyModal.value = true
+}
+
+/** 用户确认搬回：服务层把机器人传送回起点并恢复满电。 */
+function onCarryHomeConfirm() {
+  showEmptyModal.value = false
+  service.carryBackHome()
 }
 
 // --------------------------------------------------------------------------

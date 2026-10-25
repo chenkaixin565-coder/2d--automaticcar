@@ -46,3 +46,15 @@ class PatrolStartCommand(BaseModel):
     """开始自动巡检指令，goals 缺省时使用地图巡检点。"""
 
     goals: Optional[list[tuple[int, int]]] = Field(None, description="巡检点列表")
+
+
+class PlanGoalCommand(BaseModel):
+    """一键路线规划指令：指定目标巡检点。"""
+
+    goal: list[int] = Field(..., description="目标巡检点坐标 [x, y]")
+
+
+class ClearObstacleCommand(BaseModel):
+    """手动清障指令：指定要清除的障碍格。"""
+
+    cell: list[int] = Field(..., description="障碍坐标 [x, y]")

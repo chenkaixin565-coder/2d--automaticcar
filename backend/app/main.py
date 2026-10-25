@@ -82,8 +82,8 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(
     title="智能巡检机器人二维仿真系统",
-    description="基于 FastAPI 的二维栅格机器人仿真后端：A* 寻路、虚拟传感器、规则异常检测",
-    version="V1.0",
+    description="基于 FastAPI 的二维栅格机器人仿真后端：A* 寻路、虚拟传感器、规则异常检测、一键路线规划与自动清障",
+    version="V1.2",
     lifespan=lifespan,
 )
 
@@ -107,7 +107,7 @@ app.include_router(create_ws_router(engine, settings.tick_interval_ms))
 @app.get("/api/v1/health", summary="健康检查")
 async def health() -> dict:
     """容器/负载均衡健康探针。"""
-    return {"status": "ok", "version": "V1.0"}
+    return {"status": "ok", "version": "V1.2"}
 
 
 # ---------- 前端静态资源托管（单容器部署） ----------
