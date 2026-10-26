@@ -140,12 +140,12 @@ A* 用曼哈顿距离把搜索拉向目标，因此扩展节点更少。
 
 ```
 电量 < 20%  →  mode = charging
-            →  A* 规划到 charge_point（固定屏障不可穿越，普通障碍按可穿越处理）
+            →  A* 规划到 charge_point（只走可通行格；障碍与固定屏障都不穿越）
             →  到点后每 tick 恢复 1%
             →  充满 100% 且此前在巡检 → 自动继续原任务
 ```
 
-若充电点被完全封死，返回 `empty` 状态并提示用户搬回起点（`POST /robot/carry-home`）。
+若到充电点无路可走（被障碍或固定屏障封死），返回 `empty` 状态并提示用户搬回起点（`POST /robot/carry-home`）。
 相关阈值来自 `shared/simulation-rules.json`，前后端共用同一份。
 
 ---
