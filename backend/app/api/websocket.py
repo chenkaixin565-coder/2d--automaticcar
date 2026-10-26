@@ -34,18 +34,42 @@ class ConnectionManager:
     """WebSocket 连接管理器（支持多客户端广播）。"""
 
     def __init__(self) -> None:
-        """初始化空连接集合。"""
+        """初始化空连接集合与权限表。"""
         self.active_connections: list[WebSocket] = []
+        # 每个连接是否有操作权限（V2.2.1：读状态公开，写指令需要密钥）。
+        self._control: dict[WebSocket, bool] = {}
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, can_control: bool = True) -> None:
         """
         接受并登记新连接。
 
         :param websocket: FastAPI WebSocket 实例。
+        :param can_control: 该连接是否允许下发控制指令。
         """
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info("WebSocket 客户端接入，当前连接数 %d", len(self.active_connections))
+        self._control[websocket] = can_control
+        logger.info(
+            "WebSocket 客户端接入（%s），当前连接数 %d",
+            "可操作" if can_control else "只读",
+            len(self.active_connections),
+        )
+
+    def can_control(self, websocket: WebSocket) -> bool:
+        """查询某个连接是否具备操作权限。"""
+        return self._control.get(websocket, False)
+
+    async def send(self, websocket: WebSocket, frame: dict) -> None:
+        """
+        只向指定连接发送一帧（用于鉴权提示，不打扰其他客户端）。
+
+        :param websocket: 目标连接。
+        :param frame: 协议帧。
+        """
+        try:
+            await websocket.send_text(json.dumps(frame, ensure_ascii=False))
+        except Exception:  # noqa: BLE001 - 发送失败按断开处理
+            self.disconnect(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
         """
@@ -55,6 +79,7 @@ class ConnectionManager:
         """
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+        self._control.pop(websocket, None)
         logger.info("WebSocket 客户端断开，剩余连接数 %d", len(self.active_connections))
 
     async def broadcast(self, frame: dict) -> None:
@@ -130,26 +155,33 @@ def create_ws_router(engine: SimulationEngine) -> APIRouter:
             ip, settings.rate_limit_per_minute, settings.rate_limit_burst
         )
         # 先 accept 再 close，浏览器才能读到 44xx 关闭码；
-        # 握手阶段直接 close 只会得到一个 HTTP 403，前端无法区分"密钥错"与"网络断"。
+        # 握手阶段直接 close 只会得到一个 HTTP 403，前端无法区分"限流"与"网络断"。
         if not allowed:
             metrics.inc("ws_rejected_total")
             await websocket.accept()
             await websocket.close(code=4429, reason="rate limited")
             return
-        if settings.readonly_mode:
-            metrics.inc("ws_rejected_total")
-            await websocket.accept()
-            await websocket.close(code=4403, reason="readonly mode")
-            return
-        if settings.operator_key:
-            supplied = websocket.query_params.get("api_key", "")
-            if not supplied or not secrets.compare_digest(supplied, settings.operator_key):
-                metrics.inc("ws_rejected_total")
-                await websocket.accept()
-                await websocket.close(code=4401, reason="operator key required")
-                return
-        await manager.connect(websocket)
+
+        # V2.2.1：未带密钥也允许连接——读状态公开，下发指令时才需要操作权限。
+        # 否则"仅浏览"的用户会看到一张静止的地图（收不到 state 帧）。
+        supplied = websocket.query_params.get("api_key", "")
+        key_ok = bool(settings.operator_key) and bool(supplied) and secrets.compare_digest(
+            supplied, settings.operator_key
+        )
+        can_control = not settings.readonly_mode and (not settings.operator_key or key_ok)
+        await manager.connect(websocket, can_control=can_control)
         metrics.inc("ws_connections_total")
+        await manager.send(
+            websocket,
+            {
+                "type": "auth_state",
+                "data": {
+                    "can_control": can_control,
+                    "readonly": settings.readonly_mode,
+                    "auth_mode": settings.auth_mode,
+                },
+            },
+        )
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -162,6 +194,23 @@ def create_ws_router(engine: SimulationEngine) -> APIRouter:
                     continue
                 action = message.get("action")
                 payload = message.get("payload") or {}
+                if not manager.can_control(websocket):
+                    # 只读连接：明确告知原因，前端据此弹出密钥输入框。
+                    metrics.inc("ws_command_denied_total")
+                    await manager.send(
+                        websocket,
+                        {
+                            "type": "auth_required",
+                            "data": {
+                                "code": 4403 if settings.readonly_mode else 4401,
+                                "readonly": settings.readonly_mode,
+                                "message": "只读模式：当前部署不允许控制"
+                                if settings.readonly_mode
+                                else ("密钥不正确，请重新输入" if supplied else "需要操作密钥才能控制机器人"),
+                            },
+                        },
+                    )
+                    continue
                 logger.info("收到客户端指令: %s %s", action, payload)
                 try:
                     _dispatch(engine, action, payload)

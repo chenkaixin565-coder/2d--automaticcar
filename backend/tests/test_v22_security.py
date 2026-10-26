@@ -125,3 +125,37 @@ def test_shared_rules_are_single_source():
     assert [list(g) for g in engine.map.goals] == shared_map["goals"]
     assert list(engine.map.start) == shared_map["start"]
     assert list(engine.map.charge_point) == shared_map["charge_point"]
+
+
+def test_ws_readonly_can_watch_but_not_control(monkeypatch):
+    """未带密钥的连接仍能收到状态，但下发指令会被拒绝并回 auth_required。"""
+    monkeypatch.setattr(settings, "operator_key", "s3cret", raising=False)
+    with client.websocket_connect("/api/v1/ws") as ws:
+        first = ws.receive_json()
+        assert first["type"] == "auth_state"
+        assert first["data"]["can_control"] is False
+
+        ws.send_json({"type": "command", "action": "move", "payload": {"dx": 1, "dy": 0}})
+        denied = None
+        for _ in range(10):
+            message = ws.receive_json()
+            if message["type"] == "auth_required":
+                denied = message
+                break
+        assert denied is not None
+        assert denied["data"]["code"] == 4401
+
+
+def test_ws_with_key_can_control(monkeypatch):
+    """带正确密钥的连接 auth_state.can_control 为 True，并真的能移动。"""
+    monkeypatch.setattr(settings, "operator_key", "s3cret", raising=False)
+    with client.websocket_connect("/api/v1/ws?api_key=s3cret") as ws:
+        first = ws.receive_json()
+        assert first["type"] == "auth_state"
+        assert first["data"]["can_control"] is True
+
+    # 同一密钥走 HTTP 写接口应被放行（副作用由 WS 推送，测试环境无推送循环）
+    moved = client.post(
+        "/api/v1/robot/move", json={"dx": 1, "dy": 0}, headers={"X-API-Key": "s3cret"}
+    )
+    assert moved.status_code == 200

@@ -50,6 +50,8 @@ export class RemoteService extends RobotService {
     this._disconnectNotified = false
     /** 最近一次鉴权失败信息（V2.2.0）：供界面挂载后补弹密钥框。 */
     this._authState = null
+    /** 当前连接是否具备操作权限（V2.2.1：只读连接也能收到状态帧）。 */
+    this._canControl = false
     /** 标识本服务为远程后端实现，供上层区分数据源。 */
     this.isRemote = true
 
@@ -92,6 +94,8 @@ export class RemoteService extends RobotService {
         this._disconnectNotified = false
     /** 最近一次鉴权失败信息（V2.2.0）：供界面挂载后补弹密钥框。 */
     this._authState = null
+    /** 当前连接是否具备操作权限（V2.2.1：只读连接也能收到状态帧）。 */
+    this._canControl = false
         this._fetchInitial()
         this._emitEvent('notice', { message: '已连接到后端仿真服务' })
       }
@@ -145,6 +149,16 @@ export class RemoteService extends RobotService {
       this._emitEvent('blocked', frame.data)
     } else if (frame.type === 'empty') {
       this._emitEvent('empty', frame.data)
+    } else if (frame.type === 'auth_state') {
+      this._canControl = Boolean(frame.data && frame.data.can_control)
+      if (this._canControl) this._authState = null
+    } else if (frame.type === 'auth_required') {
+      // 只读连接尝试下发指令：服务端回一帧鉴权提示，前端弹密钥框
+      this._requireAuth({
+        code: frame.data && frame.data.code ? frame.data.code : 4401,
+        readonly: Boolean(frame.data && frame.data.readonly),
+        message: (frame.data && frame.data.message) || '需要操作密钥才能修改状态',
+      })
     } else if (frame.type === 'notice') {
       const msg = frame.data && frame.data.message ? frame.data.message : ''
       if (msg.includes('复位') || msg.includes('重新开始')) {
@@ -276,6 +290,8 @@ export class RemoteService extends RobotService {
     this._disconnectNotified = false
     /** 最近一次鉴权失败信息（V2.2.0）：供界面挂载后补弹密钥框。 */
     this._authState = null
+    /** 当前连接是否具备操作权限（V2.2.1：只读连接也能收到状态帧）。 */
+    this._canControl = false
     this._connect()
   }
 
@@ -297,6 +313,11 @@ export class RemoteService extends RobotService {
   /** 当前是否已配置操作密钥。 */
   get hasOperatorKey() {
     return Boolean(getApiKey())
+  }
+
+  /** 当前连接是否具备操作权限（由服务端 auth_state 帧下发）。 */
+  get canControl() {
+    return this._canControl
   }
 
   /** 后端基地址（同源时为空字符串），供地图库等 REST 调用复用。 */
