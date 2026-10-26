@@ -48,8 +48,8 @@ class GridMap(BaseModel):
             if len(row) != row_len:
                 raise ValueError("栅格数组各行长度必须一致")
             for cell in row:
-                if cell not in (0, 1):
-                    raise ValueError("栅格取值只能为 0 或 1")
+                if cell not in (0, 1, 2):
+                    raise ValueError("栅格取值只能为 0（通行）、1（障碍）或 2（固定屏障）")
         return value
 
     @model_validator(mode="after")
@@ -105,7 +105,8 @@ class GridMap(BaseModel):
         if self.is_boundary(x, y):
             raise ValueError(f"{label}不能位于地图边界上（边界墙不可通行）")
         if self.grid[y][x] != 0:
-            raise ValueError(f"{label} ({x}, {y}) 位于障碍格上")
+            kind = "固定屏障" if self.grid[y][x] == 2 else "障碍"
+            raise ValueError(f"{label} ({x}, {y}) 位于{kind}上")
 
     def in_bounds(self, x: int, y: int) -> bool:
         """

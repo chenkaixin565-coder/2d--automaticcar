@@ -376,11 +376,18 @@ export class SimulatedService extends RobotService {
     this._paused = true
     this._patrol.paused = true
     this._patrol.blockedBy = [blockedCell[0], blockedCell[1]]
-    this._blocked = { cell: [blockedCell[0], blockedCell[1]], reason: 'obstacle' }
+    const isBarrier = this._map.grid[blockedCell[1]][blockedCell[0]] === 2
+    this._blocked = {
+      cell: [blockedCell[0], blockedCell[1]],
+      reason: isBarrier ? 'barrier' : 'obstacle',
+    }
     this._state.speed = 0.0
     this._emitEvent('blocked', {
       cell: [blockedCell[0], blockedCell[1]],
-      message: `巡检受阻：前方 [${blockedCell[0]}, ${blockedCell[1]}] 有障碍，是否清除？`,
+      reason: isBarrier ? 'barrier' : 'obstacle',
+      message: isBarrier
+        ? `巡检受阻：前方 [${blockedCell[0]}, ${blockedCell[1]}] 是固定屏障，无法清除，只能绕行或跳过`
+        : `巡检受阻：前方 [${blockedCell[0]}, ${blockedCell[1]}] 有障碍，是否清除？`,
       battery: Math.round(this._state.battery * 10) / 10,
       clear_cost: CLEAR_OBSTACLE_COST,
     })
@@ -1083,6 +1090,45 @@ export class SimulatedService extends RobotService {
   }
 
   /**
+   * 编辑单个格子（V2.1）：地图编辑用，不消耗电量。
+   *
+   * @param {number} x - 列坐标。
+   * @param {number} y - 行坐标。
+   * @param {0|1|2} value - 0=通行 1=障碍 2=固定屏障。
+   */
+  setCell(x, y, value) {
+    if (![0, 1, 2].includes(value)) return
+    if (x < 0 || x >= this._map.width || y < 0 || y >= this._map.height) return
+    if (isBoundaryCell(x, y, this._map.width, this._map.height)) {
+      this._emitEvent('notice', { message: '最外环是地图边界，不能编辑' })
+      return
+    }
+    const isKeyCell =
+      (x === this._map.start[0] && y === this._map.start[1]) ||
+      (x === this._map.charge_point[0] && y === this._map.charge_point[1]) ||
+      this._map.goals.some((g) => g[0] === x && g[1] === y)
+    if (value !== 0 && isKeyCell) {
+      this._emitEvent('notice', { message: '该格是起点 / 充电点 / 巡检点，不能设为障碍或屏障' })
+      return
+    }
+    if (value !== 0 && x === this._state.x && y === this._state.y) {
+      this._emitEvent('notice', { message: '机器人正站在该格上，请先移动机器人' })
+      return
+    }
+    this._map.grid[y][x] = value
+    this._pending = this._pending.filter((c) => !(c[0] === x && c[1] === y))
+    if (this._blocked && this._blocked.cell[0] === x && this._blocked.cell[1] === y && value === 0) {
+      this._blocked = null
+      this._paused = false
+      this._patrol.paused = false
+      this._patrol.blockedBy = null
+    }
+    this._saveMap()
+    this._refreshPlan()
+    this._emitState()
+  }
+
+  /**
    * 清除指定障碍格（手动清障 / 计划内清障）。
    *
    * 边界墙、非障碍格、空电、电量不足都会被拒绝；每处扣除固定清障电量。
@@ -1103,6 +1149,13 @@ export class SimulatedService extends RobotService {
     }
     if (isBoundaryCell(x, y, this._map.width, this._map.height)) {
       this._emitEvent('notice', { message: '该位置是固定边界墙，无法清除' })
+      this._emitState()
+      return
+    }
+    if (this._map.grid[y][x] === 2) {
+      this._emitEvent('notice', {
+        message: '该位置是固定屏障，机器人无法清除；请在「擦除」编辑模式下人工擦除',
+      })
       this._emitState()
       return
     }
@@ -1225,6 +1278,10 @@ export class SimulatedService extends RobotService {
       return
     }
     const cell = [...this._blocked.cell]
+    if (action === 'clear' && this._map.grid[cell[1]][cell[0]] === 2) {
+      this._emitEvent('notice', { message: '前方是固定屏障，机器人无法清除；请选择跳过或停止' })
+      return
+    }
     if (action === 'clear') {
       this.clearObstacleAt(cell)
     } else if (action === 'skip') {

@@ -260,4 +260,14 @@ export class RobotService {
   getPending() {
     throw new Error('子类必须实现 getPending 方法')
   }
+
+  /**
+   * 编辑单个格子（V2.1）：地图编辑用，不消耗电量。
+   * @param {number} _x - 列坐标。
+   * @param {number} _y - 行坐标。
+   * @param {0|1|2} _value - 0=通行 1=障碍 2=固定屏障。
+   */
+  setCell(_x, _y, _value) {
+    throw new Error('子类必须实现 setCell 方法')
+  }
 }

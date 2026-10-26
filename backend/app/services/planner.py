@@ -12,7 +12,7 @@
 
 import heapq
 
-from app.core.constants import CELL_OBSTACLE
+from app.core.constants import CELL_BARRIER, CELL_OBSTACLE
 
 # 四邻域移动方向（dx, dy），与 astar 保持一致。
 _NEIGHBORS = [(0, -1), (0, 1), (-1, 0), (1, 0)]
@@ -40,9 +40,11 @@ def plan_route(
     height = len(grid)
     width = len(grid[0]) if height else 0
 
-    # 边界墙不可穿越；内部格（含普通障碍）均可通行。
+    # 边界墙与固定屏障不可穿越；普通障碍视为"可通行但需清除"。
     def passable(x: int, y: int) -> bool:
-        return 0 < x < width - 1 and 0 < y < height - 1
+        if not (0 < x < width - 1 and 0 < y < height - 1):
+            return False
+        return grid[y][x] != CELL_BARRIER
 
     if not passable(*start) or not passable(*goal):
         return {"path": [], "obstacles_on_path": []}

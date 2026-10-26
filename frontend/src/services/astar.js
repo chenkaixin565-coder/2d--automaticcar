@@ -30,8 +30,8 @@ export function astar(grid, start, goal) {
   if (
     !inBounds(start, width, height) ||
     !inBounds(goal, width, height) ||
-    grid[start[1]][start[0]] === 1 ||
-    grid[goal[1]][goal[0]] === 1
+    grid[start[1]][start[0]] !== 0 ||
+    grid[goal[1]][goal[0]] !== 0
   ) {
     return { path: [], visited_count: 0, cost: 0 }
   }
@@ -84,7 +84,7 @@ export function astar(grid, start, goal) {
       if (!inBounds(neighbor, width, height)) {
         continue
       }
-      if (grid[neighbor[1]][neighbor[0]] === 1) {
+      if (grid[neighbor[1]][neighbor[0]] !== 0) {
         continue
       }
       if (closedSet.has(neighborKey)) {

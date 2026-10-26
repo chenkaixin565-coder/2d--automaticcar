@@ -14,7 +14,7 @@ import math
 import random
 
 from app.core import config
-from app.core.constants import CELL_OBSTACLE
+from app.core.constants import CELL_OBSTACLE, CELL_BARRIER
 
 
 class SensorSimulator:
@@ -69,7 +69,7 @@ class SensorSimulator:
             current_y += dy
             if not self._in_bounds(current_x, current_y):
                 return round(step * config.settings.cell_distance_m, 2)
-            if self.grid[current_y][current_x] == CELL_OBSTACLE:
+            if self.grid[current_y][current_x] in (CELL_OBSTACLE, CELL_BARRIER):
                 return round(step * config.settings.cell_distance_m, 2)
         # 走满量程仍未命中，视为超程。
         return None

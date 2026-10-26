@@ -228,6 +228,15 @@
       <p class="text-xs text-gray-500 dark:text-gray-400">切换后机器人自动复位到新地图起点</p>
     </div>
 
+    <!-- 地图库：保存 / 切换 / 导入导出 / 新建设计 -->
+    <button
+      type="button"
+      class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-primary-200 dark:border-primary-800 text-primary-700 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+      @click="$emit('open-library')"
+    >
+      📚 地图库（保存 / 切换 / 导入导出）
+    </button>
+
     <!-- 地图导入导出 -->
     <div class="space-y-2">
       <h3 class="text-sm font-medium text-gray-800 dark:text-gray-200">地图导入导出</h3>
@@ -399,6 +408,7 @@ const emit = defineEmits([
   'new-map',
   'restart',
   'clear-nearest',
+  'open-library',
   'toggle-goal-numbers',
   'carry-home',
 ])
@@ -454,10 +464,11 @@ async function onAvatarFileChange(event) {
 
 const editModes = [
   { key: 'obstacle', label: '障碍' },
+  { key: 'barrier', label: '屏障' },
+  { key: 'erase', label: '擦除' },
   { key: 'goal', label: '巡检点' },
   { key: 'start', label: '起点' },
   { key: 'charge', label: '充电点' },
-  { key: 'clear', label: '清障' },
 ]
 
 const modeClass = computed(() => {

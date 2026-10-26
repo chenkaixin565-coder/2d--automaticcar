@@ -71,6 +71,22 @@ class PatrolDecisionCommand(BaseModel):
     action: str = Field(..., description="决策动作 clear|skip|stop")
 
 
+class CellEditCommand(BaseModel):
+    """单格编辑指令（V2.1）：地图编辑用，不消耗电量。"""
+
+    x: int = Field(..., description="列坐标")
+    y: int = Field(..., description="行坐标")
+    value: int = Field(..., ge=0, le=2, description="0=通行 1=障碍 2=固定屏障")
+
+
+class MapSaveCommand(BaseModel):
+    """保存地图到服务端地图库（V2.1）。"""
+
+    name: str = Field(..., min_length=1, max_length=40, description="地图名称")
+    map: dict = Field(..., description="完整地图对象")
+    id: str | None = Field(None, description="传入则覆盖保存同名地图")
+
+
 class NewMapCommand(BaseModel):
     """新建空白地图指令（V2.0）。"""
 

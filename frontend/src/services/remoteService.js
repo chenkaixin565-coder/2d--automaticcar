@@ -223,6 +223,11 @@ export class RemoteService extends RobotService {
     return false
   }
 
+  /** 后端基地址（同源时为空字符串），供地图库等 REST 调用复用。 */
+  get baseUrl() {
+    return this._baseUrl || ''
+  }
+
   // ----------------------------------------------------------------------
   // 公共接口实现（与 SimulatedService 签名保持一致）
   // ----------------------------------------------------------------------
@@ -381,6 +386,20 @@ export class RemoteService extends RobotService {
             this._emitState()
           }
         })
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 编辑单个格子（V2.1，免费）。
+   * @param {number} x - 列坐标。
+   * @param {number} y - 行坐标。
+   * @param {0|1|2} value - 0=通行 1=障碍 2=固定屏障。
+   */
+  setCell(x, y, value) {
+    if (!this._sendCommand('set_cell', { x, y, value })) {
+      this._rest('POST', '/api/v1/map/cell', { x, y, value })
+        .then((payload) => this._syncCommandPayload(payload))
         .catch((e) => console.error(e))
     }
   }

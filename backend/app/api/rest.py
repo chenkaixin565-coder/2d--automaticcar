@@ -16,17 +16,20 @@ V2.0 变更：
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.models.map import GridMap
 from app.models.robot import (
+    CellEditCommand,
     ClearObstacleCommand,
+    MapSaveCommand,
     MoveCommand,
     NewMapCommand,
     PatrolDecisionCommand,
     PatrolStartCommand,
     PlanGoalCommand,
 )
+from app.services import map_store
 from app.services.simulation_engine import SimulationEngine
 
 logger = logging.getLogger("api.rest")
@@ -65,6 +68,59 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
         :return: 新地图字典。
         """
         return engine.new_map(command.width, command.height)
+
+    @router.post("/map/cell", summary="编辑单个格子（不耗电）")
+    async def set_cell(command: CellEditCommand) -> dict:
+        """
+        地图编辑：把某一格设为通行 / 障碍 / 固定屏障，不消耗电量。
+
+        :param command: {'x': int, 'y': int, 'value': 0|1|2}
+        :return: state 数据 + 权威地图。
+        """
+        return engine.set_cell(command.x, command.y, command.value)
+
+    @router.get("/maps", summary="地图库列表")
+    async def list_maps() -> list[dict]:
+        """列出服务端已保存的地图（只返回元信息）。"""
+        return map_store.list_maps()
+
+    @router.post("/maps", summary="保存地图到地图库")
+    async def save_map(command: MapSaveCommand) -> dict:
+        """
+        保存地图。栅格非法时返回 422。
+
+        :param command: {'name': str, 'map': {...}, 'id': 可选}
+        :return: 保存后的元信息。
+        """
+        grid_map = GridMap.model_validate(command.map)
+        return map_store.save_map(command.name, grid_map, command.id)
+
+    @router.get("/maps/{map_id}", summary="读取地图库中的地图")
+    async def get_map_from_store(map_id: str) -> dict:
+        """读取一张完整地图；不存在时返回 404。"""
+        data = map_store.load_map(map_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="地图不存在")
+        return data
+
+    @router.delete("/maps/{map_id}", summary="删除地图库中的地图")
+    async def delete_map_from_store(map_id: str) -> dict:
+        """删除一张地图。"""
+        ok = map_store.delete_map(map_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="地图不存在")
+        return {"deleted": map_id}
+
+    @router.post("/maps/{map_id}/load", summary="载入地图库中的地图")
+    async def load_map_from_store(map_id: str) -> dict:
+        """读取并切换为当前地图，机器人复位。"""
+        data = map_store.load_map(map_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="地图不存在")
+        payload = {k: data[k] for k in ("width", "height", "grid", "start", "goals", "charge_point")}
+        engine.update_map(payload)
+        engine.reset(keep_trail=False)
+        return {"map": engine.get_map(), "id": map_id}
 
     @router.post("/robot/move", summary="手动控制机器人移动")
     async def robot_move(command: MoveCommand) -> dict:

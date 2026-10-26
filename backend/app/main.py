@@ -114,8 +114,8 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="智能巡检机器人二维仿真系统",
     description="基于 FastAPI 的二维栅格机器人仿真后端：A* 寻路、虚拟传感器、规则异常检测、"
-    "一键路线规划与自动清障（V2.0）",
-    version="V2.0",
+    "一键路线规划、自动清障与地图编辑（V2.1）",
+    version="V2.1",
     lifespan=lifespan,
 )
 
@@ -146,7 +146,7 @@ async def health() -> dict:
     age = None if last is None else round(time.time() - last, 1)
     return {
         "status": "ok",
-        "version": "V2.0",
+        "version": "V2.1",
         "tick_errors": _TICK_STATE["tick_errors"],
         "last_tick_age_s": age,
         "tick_alive": age is not None and age < max(5.0, settings.tick_interval_ms / 1000 * 10),

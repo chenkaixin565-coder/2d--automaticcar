@@ -31,3 +31,6 @@ frontend/_verify2.mjs
 push_via_api.py
 .commit-msg
 push_api2.py
+
+# 服务端地图库数据（运行时生成）
+backend/data/

@@ -256,8 +256,11 @@ describe('地图导入校验 validateMap', () => {
 
   it('栅格含非法值（2）应拒绝', () => {
     const map = validMap()
-    map.grid[2][2] = 2
+    map.grid[2][2] = 3
     expect(validateMap(map).ok).toBe(false)
+    // V2.1：2 是合法的"固定屏障"，应当通过校验
+    map.grid[2][2] = 2
+    expect(validateMap(map).ok).toBe(true)
   })
 
   it('起点位于障碍上应拒绝', () => {

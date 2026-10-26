@@ -1,4 +1,0 @@
-[[app]]
-name = "app"
-port = 3_000
-cmd = 'cd "/workspace/backend" && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 3000'

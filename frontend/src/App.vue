@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.1</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -58,7 +58,7 @@
           :pending="pendingCells"
           @view-change="onViewChange"
           @fit="fitMap"
-          @edit-obstacle="onEditObstacle"
+          @edit-cell="onEditCell"
           @clear-obstacle="onClearObstacle"
           @set-goal="onSetGoal"
           @set-start="onSetStart"
@@ -123,6 +123,7 @@
           @new-map="onOpenNewMap"
           @restart="onRestart"
           @clear-nearest="onClearNearest"
+          @open-library="showLibrary = true"
           @move="onMove"
           @reset="onReset"
           @resolve-fault="onResolveFault"
@@ -189,13 +190,14 @@
         @open-plan="drawerOpen = true"
       />
 
-      <!-- 移动端详情抽屉 -->
-      <div
-        v-show="drawerOpen"
-        class="md:hidden absolute bottom-[11.5rem] left-2 right-2 z-40 max-h-[55vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl"
+      <!-- 移动端详情：可拖动浮窗（V2.1） -->
+      <DraggablePanel
+        :visible="drawerOpen"
+        title="更多详情"
+        :width="340"
+        @close="drawerOpen = false"
       >
-        <div class="w-10 h-1.5 mx-auto my-2 rounded-full bg-gray-300 dark:bg-gray-700" />
-        <div class="flex flex-col gap-3 p-3 pb-6">
+        <div class="flex flex-col gap-3 max-h-[52vh] overflow-y-auto pr-1">
           <RoutePlanPanel
             :plan="routePlan"
             :map-goals="map.goals"
@@ -225,8 +227,35 @@
           />
           <AlertList :anomalies="anomalies" @clear="onClearAlerts" @export="onExportAlerts" />
         </div>
-      </div>
+      </DraggablePanel>
     </main>
+
+    <!-- 路线预览浮层（V2.1）：可拖动、可最小化，不会被告警遮挡 -->
+    <PlanPreviewCard
+      :plan="routePlan"
+      :battery="robot.battery"
+      @start="onPlanStart"
+      @cancel="onPlanCancel"
+    />
+
+    <!-- 地图库（V2.1）：保存 / 切换 / 导入导出 / 新建 -->
+    <MapLibraryModal
+      :visible="showLibrary"
+      :current-map="map"
+      :cloud-base="cloudBase"
+      @close="showLibrary = false"
+      @loaded="onLoadMap"
+      @notify="(msg) => addToast('notice', msg)"
+      @open-designer="onOpenDesigner"
+    />
+
+    <!-- 地图设计器（V2.1）：全屏大画布，自己设计障碍与屏障 -->
+    <MapDesigner
+      :visible="showDesigner"
+      :initial-map="designerInitial"
+      @close="showDesigner = false"
+      @save="onDesignerSave"
+    />
 
     <!-- 巡检遇阻决策弹窗（V2.0）：停在障碍前一格后询问是否清除 -->
     <ObstacleDialog
@@ -281,6 +310,11 @@ import RoutePlanPanel from './components/RoutePlanPanel.vue'
 import EmptyBatteryModal from './components/EmptyBatteryModal.vue'
 import ObstacleDialog from './components/ObstacleDialog.vue'
 import NewMapModal from './components/NewMapModal.vue'
+import PlanPreviewCard from './components/PlanPreviewCard.vue'
+import MapLibraryModal from './components/MapLibraryModal.vue'
+import MapDesigner from './components/MapDesigner.vue'
+import DraggablePanel from './components/DraggablePanel.vue'
+import { saveLocal } from './services/mapLibrary.js'
 import { astar } from './services/astar.js'
 
 const SETTINGS_KEY = 'irm_settings_v1'
@@ -351,6 +385,14 @@ const showNewMapModal = ref(false)
 const blockedCell = ref(null)
 // 待清障记录（V2.0），来自 state 帧
 const pendingCells = ref([])
+// 地图库 / 地图设计器（V2.1）
+const showLibrary = ref(false)
+const showDesigner = ref(false)
+// 设计器打开时的初始地图：null 表示从空白开始（V2.1）
+const designerInitial = ref(null)
+
+/** 云端地图库地址：后端模式取服务基地址，离线模式为 null（禁用云端页签）。 */
+const cloudBase = computed(() => (usingBackend.value && service.baseUrl !== undefined ? service.baseUrl : null))
 
 // 地图视图
 const scale = ref(1)
@@ -682,6 +724,10 @@ function handleKeyDown(event) {
 // --------------------------------------------------------------------------
 
 function onStartPatrol() {
+  if (routePlan.value) {
+    onPlanStart()
+    return
+  }
   service.startPatrol(map.goals)
 }
 
@@ -701,6 +747,59 @@ function onStopPatrol() {
  */
 function onPlanRoute(goal) {
   service.planRoute(goal)
+}
+
+/**
+ * 把视图缩放到能看全整条路线的范围（V2.1：预览不再只是画条线就完事）。
+ *
+ * @param {number[][]} path - 路线坐标数组。
+ */
+function fitRoute(path) {
+  if (!path || path.length === 0) return
+  const rect = getContainerRect()
+  if (!rect) return
+  const xs = path.map((p) => p[0])
+  const ys = path.map((p) => p[1])
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  const w = (maxX - minX + 1) * CELL_PIXELS
+  const h = (maxY - minY + 1) * CELL_PIXELS
+  const padding = 80
+  const s = Math.max(0.3, Math.min((rect.width - padding) / w, (rect.height - padding) / h, 2))
+  const centerX = ((minX + maxX + 1) / 2) * CELL_PIXELS
+  const centerY = ((minY + maxY + 1) / 2) * CELL_PIXELS
+  offset.value = { x: rect.width / 2 - centerX * s, y: rect.height / 2 - centerY * s }
+  scale.value = s
+}
+
+// 规划结果一到就把视角带过去，避免"点了按钮却看不到路线在哪"
+watch(
+  () => routePlan.value,
+  (plan) => {
+    if (plan && plan.path && plan.path.length > 1) fitRoute(plan.path)
+  }
+)
+
+/** 按预览路线开始巡检：把预览目标排到第一位，并收起预览。 */
+function onPlanStart() {
+  const plan = routePlan.value
+  const goals = map.goals.map((g) => [g[0], g[1]])
+  if (plan && plan.goal) {
+    const index = goals.findIndex((g) => g[0] === plan.goal[0] && g[1] === plan.goal[1])
+    if (index > 0) {
+      const [target] = goals.splice(index, 1)
+      goals.unshift(target)
+    }
+  }
+  service.startPatrol(goals)
+  service.cancelPlan()
+}
+
+/** 取消预览：清掉闪烁虚线与标记。 */
+function onPlanCancel() {
+  service.cancelPlan()
 }
 
 /** 按当前规划批量清除电力预算内的障碍。 */
@@ -763,6 +862,53 @@ function onRestart() {
   stopPlayback()
 }
 
+/**
+ * 从地图库载入一张地图（V2.1）。
+ *
+ * @param {Object} loaded - 已通过校验的地图对象。
+ */
+function onLoadMap(loaded) {
+  service.updateMap(loaded)
+  Object.assign(map, service.getMap())
+  mapPresetKey.value = null
+  service.reset(false)
+  snapshots.value = []
+  stopPlayback()
+  showLibrary.value = false
+  fitMap()
+  addToast('notice', '地图已载入')
+}
+
+/**
+ * 打开地图设计器。
+ *
+ * @param {{blank: boolean}} [options] - blank=true 从空白图开始，否则编辑当前地图。
+ */
+function onOpenDesigner(options) {
+  const blank = options && options.blank
+  designerInitial.value = blank ? null : JSON.parse(JSON.stringify(map))
+  showLibrary.value = false
+  showDesigner.value = true
+}
+
+/**
+ * 设计器保存：先存进本机地图库，再载入仿真。
+ *
+ * @param {{name: string, map: Object}} payload - 名称与地图。
+ */
+function onDesignerSave({ name, map: designed }) {
+  saveLocal(name, designed)
+  service.updateMap(designed)
+  Object.assign(map, service.getMap())
+  mapPresetKey.value = null
+  service.reset(false)
+  snapshots.value = []
+  stopPlayback()
+  showDesigner.value = false
+  fitMap()
+  addToast('notice', `地图「${name}」已保存到地图库并载入`)
+}
+
 /** 打开"新建地图"弹窗。 */
 function onOpenNewMap() {
   showNewMapModal.value = true
@@ -821,7 +967,12 @@ function markMapCustom() {
   mapPresetKey.value = null
 }
 
-function onEditObstacle({ x, y, value }) {
+/**
+ * 编辑单个格子（V2.1）：障碍 / 固定屏障 / 擦除，都不消耗电量。
+ *
+ * @param {{x: number, y: number, value: 0|1|2}} payload - 格子坐标与目标值。
+ */
+function onEditCell({ x, y, value }) {
   if (x < 0 || x >= map.width || y < 0 || y >= map.height) return
   // 真正的边界：最外环不可绘制也不可擦除
   if (isBoundaryCell(x, y, map.width, map.height)) {
@@ -832,9 +983,28 @@ function onEditObstacle({ x, y, value }) {
     }
     return
   }
+
+  // 擦除固定屏障需要二次确认（避免手滑把设计好的隔断擦掉）
+  if (value === 0 && map.grid[y][x] === 2) {
+    if (!window.confirm(`确认擦除固定屏障 (${x}, ${y})？`)) return
+  }
+
+  const isKeyCell =
+    (map.start[0] === x && map.start[1] === y) ||
+    (map.charge_point[0] === x && map.charge_point[1] === y) ||
+    map.goals.some((g) => g[0] === x && g[1] === y)
+  if (value !== 0 && isKeyCell) {
+    addToast('notice', '该格是起点 / 充电点 / 巡检点，不能设为障碍或屏障')
+    return
+  }
+  if (value !== 0 && robot.value.x === x && robot.value.y === y) {
+    addToast('notice', '机器人正站在该格上，请先把它移开')
+    return
+  }
+
   map.grid[y][x] = value
   markMapCustom()
-  service.updateMap(map)
+  service.setCell(x, y, value)
 }
 
 function onSetGoal({ x, y }) {

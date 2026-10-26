@@ -296,3 +296,63 @@ def test_anomaly_history_is_bounded():
     for i in range(config.settings.anomaly_history_max + 50):
         det.update({"battery": 1.0, "temperature": 35.0, "front": 1.0, "left": 1.0, "right": 1.0, "position": [i, 0]})
     assert len(det.get_history()) <= config.settings.anomaly_history_max
+
+
+# ---------- V2.1：固定屏障 / 免费编辑 / 地图库 ----------
+
+
+def test_set_cell_is_free_and_blocks_robot():
+    """编辑格子不耗电；固定屏障不可被机器人清除、也不可穿越。"""
+    engine = make_engine()
+    battery_before = engine.battery
+    engine.set_cell(3, 3, 2)
+    assert engine.map.grid[3][3] == 2
+    assert engine.battery == battery_before
+
+    # 机器人清障接口拒绝固定屏障
+    engine.clear_obstacle_at([3, 3])
+    assert engine.map.grid[3][3] == 2
+
+    # A* 不穿越屏障
+    from app.algorithms.astar import astar
+
+    grid = [[0] * 6 for _ in range(6)]
+    for x in range(6):
+        grid[0][x] = 1
+        grid[5][x] = 1
+    for y in range(6):
+        grid[y][0] = 1
+        grid[y][5] = 1
+    # 单格屏障仍可绕行
+    grid[3][3] = 2
+    assert len(astar(grid, (1, 3), (4, 3))["path"]) > 0
+    # 屏障封住整列后不可达
+    for y in range(1, 5):
+        grid[y][3] = 2
+    assert astar(grid, (1, 3), (4, 3))["path"] == []
+
+
+def test_set_cell_rejects_goal_and_boundary():
+    """起点/充电点/巡检点与最外环不可设为障碍。"""
+    engine = make_engine()
+    start = tuple(engine.map.start)
+    engine.set_cell(start[0], start[1], 1)
+    assert engine.map.grid[start[1]][start[0]] == 0
+    engine.set_cell(0, 3, 1)
+    assert engine.map.grid[3][0] == 1  # 边界本来就是墙，且拒绝编辑
+
+
+def test_map_store_roundtrip(tmp_path, monkeypatch):
+    """地图库保存 / 列表 / 读取 / 删除。"""
+    from app.services import map_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path)
+    grid_map = GridMap(width=12, height=8, grid=[[0] * 12 for _ in range(8)],
+                       start=(1, 1), goals=[(3, 3)], charge_point=(2, 6))
+    meta = store.save_map("测试地图", grid_map)
+    assert meta["name"] == "测试地图"
+    assert [item["id"] for item in store.list_maps()] == [meta["id"]]
+    loaded = store.load_map(meta["id"])
+    assert loaded["width"] == 12 and loaded["goals"] == [[3, 3]]
+    assert store.delete_map(meta["id"]) is True
+    assert store.list_maps() == []

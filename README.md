@@ -1,7 +1,7 @@
-# 智能巡检机器人二维仿真系统 V2.0
+# 智能巡检机器人二维仿真系统 V2.1
 
 > 大学生社团培训班结业项目 —— 全栈版（FastAPI 后端 + Vue 前端，单容器部署）。
-> V2.0 在 V1.2 基础上重做了交互（规划=预览 / 遇阻=暂停询问 / 尾迹可隐藏），并修复了 22 项一致性缺陷。
+> V2.0 重做了交互（规划=预览 / 遇阻=暂停询问 / 尾迹可隐藏）并修复 22 项一致性缺陷；V2.1 增加地图库、地图设计器与固定屏障，并把"清障"拆成免费的编辑擦除与扣电的机器人清障。
 
 ## 项目简介
 
@@ -10,6 +10,15 @@
 前端为 Vue 3 + Canvas，后端为 FastAPI（仿真引擎、A*、传感器、异常检测、巡检调度），后端同时托管前端静态页，**一个容器即可完整运行**。
 
 ## 功能特性
+
+### V2.1 新增
+
+- **地图库**：保存 / 载入 / 重命名 / 删除 / 导入导出 JSON；本机库（localStorage）与云端库（后端 `data/maps`）双通道
+- **地图设计器**：全屏大画布，可放大缩小、自由绘制普通障碍与固定屏障、设置起点/充电点/巡检点；支持改尺寸、导出 JSON、保存后直接载入
+- **固定屏障（格子值 2）**：不可穿越、机器人无法清除，只能在地图编辑时人工擦除（带二次确认）
+- **清障语义拆分**：编辑期的「擦除」不耗电；只有巡检遇阻时的「清除并继续」才扣 5% 电量
+- **规划预览重做**：点预览后地图自动缩放到整条路线，并弹出可拖动的预览浮层（路程/待清障/耗电），可直接「按此路线巡检」，开始后预览自动收起
+- **更多详情可拖动**：移动端详情从固定抽屉改为可拖动浮窗
 
 ### V2.0 新增
 
@@ -129,6 +138,12 @@ cd frontend && npm install && npm run dev
 | POST | `/api/v1/robot/clear-nearest-pending` | 清除最近的待清障障碍（V2.0） |
 | GET  | `/api/v1/robot/pending` | 待清障记录列表（V2.0） |
 | POST | `/api/v1/robot/reset?keep_trail=true` | 重新开始并保留尾迹（V2.0） |
+| POST | `/api/v1/map/cell` | 编辑单个格子（0/1/2），不耗电（V2.1） |
+| GET  | `/api/v1/maps` | 云端地图库列表（V2.1） |
+| POST | `/api/v1/maps` | 保存地图到云端库（V2.1） |
+| GET  | `/api/v1/maps/{id}` | 读取云端地图（V2.1） |
+| POST | `/api/v1/maps/{id}/load` | 载入云端地图（V2.1） |
+| DELETE | `/api/v1/maps/{id}` | 删除云端地图（V2.1） |
 | WS  | `/api/v1/ws` | 状态帧（200ms）/ 异常·通知事件帧 / 指令下行 |
 
 WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"patrol_decision"|"reset"|"restart"|"resolve_fault"|"plan"|"clear_obstacle"|"clear_nearest_pending"|"execute_plan_clear"|"carry_home"|"cancel_plan"|"new_map", payload:{...}}`。

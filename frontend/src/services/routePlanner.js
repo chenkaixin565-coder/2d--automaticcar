@@ -29,8 +29,9 @@ const NEIGHBORS = [
 export function planRoute(grid, start, goal) {
   const height = grid.length
   const width = height ? grid[0].length : 0
-  // 边界墙不可穿越；内部格（含普通障碍）均可通行
-  const passable = (x, y) => x > 0 && x < width - 1 && y > 0 && y < height - 1
+  // 边界墙与固定屏障（2）不可穿越；普通障碍（1）视为"可通行但需清除"
+  const passable = (x, y) =>
+    x > 0 && x < width - 1 && y > 0 && y < height - 1 && grid[y][x] !== 2
   if (!passable(start[0], start[1]) || !passable(goal[0], goal[1])) {
     return { path: [], obstacles_on_path: [] }
   }

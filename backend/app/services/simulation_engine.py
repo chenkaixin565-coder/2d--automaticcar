@@ -29,6 +29,7 @@ from app.core import config
 from app.core.constants import (
     ANOMALY_LOW_BATTERY,
     ANOMALY_OBSTACLE,
+    CELL_BARRIER,
     CELL_OBSTACLE,
     MODE_BLOCKED,
     MODE_CHARGING,
@@ -428,6 +429,39 @@ class SimulationEngine:
         """控制类指令的统一响应体：state 帧数据 + 权威地图。"""
         return {**self.state_dict()["data"], "map": self.map.model_dump()}
 
+    def set_cell(self, x: int, y: int, value: int) -> dict:
+        """
+        编辑单个格子（V2.1）：地图编辑用，不消耗电量、不计入清障成本。
+
+        :param x: 列坐标。
+        :param y: 行坐标。
+        :param value: 0=通行 1=障碍 2=固定屏障。
+        :return: 控制类统一响应体（state 数据 + map）。
+        """
+        if value not in (0, 1, 2):
+            self._emit_notice("格子取值只能是 0（通行）、1（障碍）或 2（固定屏障）")
+            return self._command_payload()
+        if not self.map.in_bounds(x, y):
+            return self._command_payload()
+        if self.map.is_boundary(x, y):
+            self._emit_notice("最外环是地图边界，不能编辑")
+            return self._command_payload()
+        if value != 0 and ((x, y) == self.map.start or (x, y) == self.map.charge_point or (x, y) in self.map.goals):
+            self._emit_notice("该格是起点 / 充电点 / 巡检点，不能设为障碍或屏障")
+            return self._command_payload()
+        if value != 0 and (x, y) == (self.x, self.y):
+            self._emit_notice("机器人正站在该格上，请先移动机器人")
+            return self._command_payload()
+
+        self.map.grid[y][x] = value
+        self.pending = [c for c in self.pending if not (c[0] == x and c[1] == y)]
+        if self.blocked and self.blocked.get("cell") == [x, y] and value == 0:
+            self.blocked = None
+            self.paused = False
+            self.patrol.paused = False
+        self._refresh_plan()
+        return self._command_payload()
+
     def clear_obstacle_at(self, cell: list[int]) -> dict:
         """
         清除指定障碍格：先校验电量，再扣减清障耗电并刷新规划。
@@ -445,6 +479,9 @@ class SimulationEngine:
         if self.map.is_boundary(cell_x, cell_y):
             logger.info("手动清障：(%d, %d) 是边界墙，拒绝清除", cell_x, cell_y)
             self._emit_notice("该位置是固定边界墙，无法清除")
+            return self._command_payload()
+        if self.map.grid[cell_y][cell_x] == CELL_BARRIER:
+            self._emit_notice("该位置是固定屏障，机器人无法清除；请在「擦除」编辑模式下人工擦除")
             return self._command_payload()
         if self.map.grid[cell_y][cell_x] != CELL_OBSTACLE:
             self._emit_notice(f"位置 [{cell_x}, {cell_y}] 没有障碍，无需清除")
@@ -657,6 +694,9 @@ class SimulationEngine:
             return self._command_payload()
 
         cell = list(self.blocked["cell"])
+        if action == "clear" and self.map.in_bounds(*cell) and self.map.grid[cell[1]][cell[0]] == CELL_BARRIER:
+            self._emit_notice("前方是固定屏障，机器人无法清除；请选择跳过或停止")
+            return self._command_payload()
         if action == "clear":
             self.clear_obstacle_at(cell)
             if self.patrol.running:
@@ -741,11 +781,17 @@ class SimulationEngine:
         self.paused = True
         self.patrol.paused = True
         self.patrol.blocked_by = list(blocked_cell)
-        self.blocked = {"cell": list(blocked_cell), "reason": "obstacle"}
+        is_barrier = self.map.grid[blocked_cell[1]][blocked_cell[0]] == CELL_BARRIER
+        self.blocked = {"cell": list(blocked_cell), "reason": "barrier" if is_barrier else "obstacle"}
         self.speed = 0.0
-        self._emit_blocked(
-            f"巡检受阻：前方 [{blocked_cell[0]}, {blocked_cell[1]}] 有障碍，是否清除？"
-        )
+        if is_barrier:
+            self._emit_blocked(
+                f"巡检受阻：前方 [{blocked_cell[0]}, {blocked_cell[1]}] 是固定屏障，无法清除，只能绕行或跳过"
+            )
+        else:
+            self._emit_blocked(
+                f"巡检受阻：前方 [{blocked_cell[0]}, {blocked_cell[1]}] 有障碍，是否清除？"
+            )
 
     # ---------- 传感器与异常 ----------
 

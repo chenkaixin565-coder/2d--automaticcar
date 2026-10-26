@@ -139,7 +139,9 @@ const pinchStartOffset = ref({ x: 0, y: 0 })
 
 const editModeLabel = computed(() => {
   const labels = {
-    obstacle: '障碍编辑：按住左键拖动绘制（右键拖动平移）',
+    obstacle: '障碍：按住左键拖动添加障碍（右键拖动平移）',
+    barrier: '固定屏障：按住左键拖动绘制不可穿越的墙',
+    erase: '擦除：按住左键拖动清除障碍/屏障（编辑不耗电）',
     goal: '设置巡检点：点击地图添加 / 移除',
     start: '设置起点：点击地图',
     charge: '设置充电点：点击地图',
@@ -637,8 +639,26 @@ function drawObstacles(ctx) {
   const boundaryColor = props.isDark ? '#020617' : '#0f172a'
   const hatchColor = props.isDark ? '#1e293b' : '#334155'
 
+  const barrierColor = props.isDark ? '#111827' : '#1e293b'
+  const barrierHatch = props.isDark ? '#475569' : '#64748b'
+
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
+      if (grid[y][x] === 2) {
+        // 固定屏障（V2.1）：深色底 + 网格纹，与普通障碍区分开
+        const bx = x * CELL_PIXELS
+        const by = y * CELL_PIXELS
+        ctx.fillStyle = barrierColor
+        ctx.fillRect(bx, by, CELL_PIXELS, CELL_PIXELS)
+        ctx.strokeStyle = barrierHatch
+        ctx.lineWidth = 1.5 / props.scale
+        ctx.strokeRect(bx + 3 / props.scale, by + 3 / props.scale, CELL_PIXELS - 6 / props.scale, CELL_PIXELS - 6 / props.scale)
+        ctx.beginPath()
+        ctx.moveTo(bx + 6 / props.scale, by + CELL_PIXELS - 6 / props.scale)
+        ctx.lineTo(bx + CELL_PIXELS - 6 / props.scale, by + 6 / props.scale)
+        ctx.stroke()
+        continue
+      }
       if (grid[y][x] !== 1) continue
       const px = x * CELL_PIXELS
       const py = y * CELL_PIXELS
@@ -906,6 +926,21 @@ function screenToCell(screenX, screenY) {
  * V2.0 起不再需要"平移模式"——任何模式下拖拽都能移动地图，
  * 编辑动作改为"按下不移动、松开才算点击"，避免误拖改图。
  */
+/** 拖动绘制的三种模式。 */
+const paintModes = ['obstacle', 'barrier', 'erase']
+
+/**
+ * 编辑模式对应的落笔值。
+ *
+ * @param {string} mode - 编辑模式。
+ * @returns {number} 0=擦除 1=障碍 2=固定屏障。
+ */
+function paintValueFor(mode) {
+  if (mode === 'barrier') return 2
+  if (mode === 'erase') return 0
+  return 1
+}
+
 const downPos = ref(null)
 const downCell = ref(null)
 const movedSinceDown = ref(false)
@@ -926,8 +961,8 @@ function handleMouseDown(event) {
   }
   if (event.button !== 0) return
 
-  if (props.editMode === 'obstacle') {
-    // 障碍模式：左键拖动只"画"不"擦"（擦除请用清障模式，消耗电量）。
+  if (paintModes.includes(props.editMode)) {
+    // 障碍 / 屏障 / 擦除：按住左键拖动连续处理（都不耗电）
     if (!inBounds(cell)) return
     isPainting.value = true
     lastPaintCell.value = `${cell[0]},${cell[1]}`
@@ -935,7 +970,7 @@ function handleMouseDown(event) {
       flashRejectCell(cell[0], cell[1])
       return
     }
-    emit('edit-obstacle', { x: cell[0], y: cell[1], value: 1 })
+    emit('edit-cell', { x: cell[0], y: cell[1], value: paintValueFor(props.editMode) })
     return
   }
 
@@ -957,7 +992,7 @@ function handleMouseMove(event) {
     emit('hover', null)
   }
 
-  if (isPainting.value && props.editMode === 'obstacle') {
+  if (isPainting.value && paintModes.includes(props.editMode)) {
     const key = `${cell[0]},${cell[1]}`
     if (inBounds(cell) && key !== lastPaintCell.value) {
       lastPaintCell.value = key
@@ -965,7 +1000,7 @@ function handleMouseMove(event) {
         flashRejectCell(cell[0], cell[1])
         return
       }
-      emit('edit-obstacle', { x: cell[0], y: cell[1], value: 1 })
+      emit('edit-cell', { x: cell[0], y: cell[1], value: paintValueFor(props.editMode) })
     }
     return
   }
@@ -1001,6 +1036,12 @@ function handleMouseUp() {
 /** 鼠标/手指移出画布：取消本次交互，不触发编辑。 */
 function cancelInteraction() {
   resetInteraction()
+}
+
+/** 鼠标移出画布：清除悬停高亮并通知外层隐藏详情徽标。 */
+function handleHoverLeave() {
+  hoverCell.value = null
+  emit('hover', null)
 }
 
 function resetInteraction() {
