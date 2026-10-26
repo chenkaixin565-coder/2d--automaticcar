@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.1.1</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.2.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -258,6 +258,15 @@
       @save="onDesignerSave"
     />
 
+    <!-- 操作密钥（V2.2.0）：后端开启鉴权时弹出 -->
+    <AuthModal
+      :visible="showAuth"
+      :message="authMessage"
+      :readonly="authReadonly"
+      @submit="onAuthSubmit"
+      @close="showAuth = false"
+    />
+
     <!-- 巡检遇阻决策弹窗（V2.0）：停在障碍前一格后询问是否清除 -->
     <ObstacleDialog
       :visible="!!blockedCell"
@@ -314,6 +323,7 @@ import NewMapModal from './components/NewMapModal.vue'
 import PlanPreviewCard from './components/PlanPreviewCard.vue'
 import MapLibraryModal from './components/MapLibraryModal.vue'
 import MapDesigner from './components/MapDesigner.vue'
+import AuthModal from './components/AuthModal.vue'
 import DraggablePanel from './components/DraggablePanel.vue'
 import { saveLocal } from './services/mapLibrary.js'
 import { astar } from './services/astar.js'
@@ -389,6 +399,10 @@ const pendingCells = ref([])
 // 地图库 / 地图设计器（V2.1）
 const showLibrary = ref(false)
 const showDesigner = ref(false)
+// 操作密钥弹窗（V2.2.0）
+const showAuth = ref(false)
+const authMessage = ref('')
+const authReadonly = ref(false)
 // 设计器打开时的初始地图：null 表示从空白开始（V2.1）
 const designerInitial = ref(null)
 
@@ -503,6 +517,16 @@ onMounted(() => {
     }
   })
 
+  // 连接可能在界面挂载前就因缺少密钥被拒绝，这里补读一次状态（V2.2.0）
+  if (typeof service.getAuthState === 'function') {
+    const auth = service.getAuthState()
+    if (auth) {
+      authReadonly.value = Boolean(auth.readonly)
+      authMessage.value = auth.message || '需要操作密钥才能修改状态'
+      showAuth.value = true
+    }
+  }
+
   unsubscribeEvent = service.onEvent((frame) => {
     if (frame.type === 'anomaly') {
       anomalies.value = service.getAnomalies()
@@ -513,6 +537,11 @@ onMounted(() => {
       addToast('stuck', frame.data.message)
     } else if (frame.type === 'empty') {
       showEmptyModal.value = true
+    } else if (frame.type === 'auth_required') {
+      // 后端开启了 OPERATOR_KEY 或只读模式：提示输入密钥 / 告知只读
+      authReadonly.value = Boolean(frame.data && frame.data.readonly)
+      authMessage.value = (frame.data && frame.data.message) || '需要操作密钥才能修改状态'
+      showAuth.value = true
     } else if (frame.type === 'notice') {
       const msg = frame.data && frame.data.message ? frame.data.message : ''
       if (usingBackend.value) {
@@ -942,6 +971,21 @@ function onLoadMap(loaded) {
   showLibrary.value = false
   fitMap()
   addToast('notice', '地图已载入')
+}
+
+/**
+ * 提交操作密钥：写入 sessionStorage 并重连 WebSocket（V2.2.0）。
+ *
+ * @param {string} key - OPERATOR_KEY 明文。
+ */
+function onAuthSubmit(key) {
+  if (typeof service.setOperatorKey !== 'function') {
+    showAuth.value = false
+    return
+  }
+  service.setOperatorKey(key)
+  showAuth.value = false
+  addToast('notice', '已设置操作密钥，正在重新连接…')
 }
 
 /** 打开地图库：移动端先收起详情浮窗，避免两层浮层叠在一起。 */

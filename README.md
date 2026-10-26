@@ -1,4 +1,4 @@
-# 智能巡检机器人二维仿真系统 V2.1.1
+# 智能巡检机器人二维仿真系统 V2.2.0
 
 > 大学生社团培训班结业项目 —— 全栈版（FastAPI 后端 + Vue 前端，单容器部署）。
 > V2.0 重做了交互（规划=预览 / 遇阻=暂停询问 / 尾迹可隐藏）并修复 22 项一致性缺陷；V2.1 增加地图库、地图设计器与固定屏障，并把"清障"拆成免费的编辑擦除与扣电的机器人清障；V2.1.1 修掉预览缩放过大、关闭预览后视角卡在角落，并把地图库入口补到移动端。
@@ -10,6 +10,15 @@
 前端为 Vue 3 + Canvas，后端为 FastAPI（仿真引擎、A*、传感器、异常检测、巡检调度），后端同时托管前端静态页，**一个容器即可完整运行**。
 
 ## 功能特性
+
+### V2.2.0 新增（工程一致性）
+
+- **单一规则源**：电量、传感器、温度、地图尺寸全部来自 `shared/simulation-rules.json`，后端 `config.py` 与前端 `simulatedService` 都读这一份；默认厂房地图来自 `shared/default-map.json`，两端逐格一致
+- **操作鉴权**：设置 `OPERATOR_KEY` 后，所有写接口需要 `X-API-Key`，WebSocket 需要 `?api_key=`；前端会弹出密钥输入框，密钥只存 sessionStorage
+- **只读模式**：`READONLY_MODE=true` 时写操作统一 403，适合公开展示
+- **按 IP 限流**：令牌桶，默认 240 次/分钟、突发 80，超限返回 429 + `Retry-After`；WebSocket 握手同样计数
+- **Prometheus 指标**：`GET /metrics` 暴露请求量、限流/鉴权拒绝数、WS 连接数、电量与坐标
+- 前端新增共享规则测试，任何一侧改数值另一侧没跟上都会直接失败
 
 ### V2.1.1 修复
 
@@ -81,6 +90,7 @@ graph TD
 - 后端：Python 3.11 + FastAPI + Uvicorn
 - 算法 / 数据：numpy + scikit-learn（IsolationForest）
 - 实时通信：WebSocket（状态帧 200ms、异常/通知事件帧）
+- 规则来源：`shared/simulation-rules.json` + `shared/default-map.json`（前后端共用）
 - 部署：Docker 多阶段构建（Node 构建前端 → Python 托管）+ docker-compose + Render 蓝图（`render.yaml` 一键公网部署）
 
 ## 快速开始
@@ -123,11 +133,35 @@ cd frontend && npm install && npm run dev
 
 > 仅需前端公网页时，也可单独使用 GitHub Pages（仓库 `gh-pages` 分支）：Pages 为纯静态托管，跑不了后端，页面会以内置本地仿真器运行；如需接入远程后端，在链接后加 `?backend=https://后端地址` 即可（跨源需在后端环境变量 `CORS_ORIGINS` 中放行 Pages 域名）。
 
+## 访问控制与限流（V2.2.0）
+
+默认是**开放演示模式**：不配置密钥，任何访问者都能操作（启动日志会打一条 WARNING）。要演示"只有持钥者能改"，设置环境变量即可：
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `OPERATOR_KEY` | 空 | 设置后写接口需 `X-API-Key`，WebSocket 需 `?api_key=`；前端首次写操作会弹密钥框 |
+| `READONLY_MODE` | `false` | 开启后所有写操作返回 403（只读展示） |
+| `RATE_LIMIT_PER_MINUTE` | `240` | 每个客户端每分钟请求数，`0` 关闭 |
+| `RATE_LIMIT_BURST` | `80` | 允许的瞬时突发 |
+| `TRUST_PROXY_HEADERS` | `true` | 反向代理后从 `X-Forwarded-For` 取真实 IP |
+
+示例：
+
+```bash
+OPERATOR_KEY=换成你的随机长串 uvicorn app.main:app --port 8000
+curl -X POST localhost:8000/api/v1/robot/move \
+  -H 'Content-Type: application/json' -H 'X-API-Key: 换成你的随机长串' \
+  -d '{"dx":1,"dy":0}'
+```
+
+边界说明：限流计数与指标都在**进程内存**，单实例有效；多实例部署需要 Redis 等共享存储，本项目刻意没有引入。密钥不要写进 `VITE_*` 变量——那会被打进公开 JS。
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/health` | 健康检查 |
+| GET | `/api/v1/health` | 健康检查（含 `auth_mode` / `ws_clients`） |
+| GET | `/metrics` | Prometheus 文本指标（V2.2.0） |
 | GET | `/api/v1/map` | 获取当前地图 |
 | PUT | `/api/v1/map` | 更新地图 |
 | GET | `/api/v1/path?start=x,y&goal=x,y` | A* 求路径 |
@@ -160,6 +194,9 @@ WebSocket 帧类型：`state`（200ms 状态帧，含 `paused` / `blocked` / `pe
 
 ```
 project-root/
+├── shared/                  # 前后端共用的规则与默认地图（单一事实源）
+│   ├── simulation-rules.json
+│   └── default-map.json
 ├── frontend/                # Vue 前端工程
 │   ├── src/services/        # 数据服务层（RobotService 接口 + Simulated/Remote 实现 + routePlanner 穿障规划）
 │   └── src/components/      # 地图、控制、状态等组件
@@ -168,7 +205,7 @@ project-root/
 │   │   ├── algorithms/      # A* 寻路
 │   │   ├── services/        # 仿真引擎、传感器、异常检测、巡检调度、路线规划
 │   │   ├── api/             # REST 与 WebSocket 路由
-│   │   └── core/            # 配置、常量、异常
+│   │   └── core/            # 配置、常量、共享规则加载、限流、指标、鉴权
 │   ├── static/dist/         # 前端构建产物（由 Docker 多阶段注入）
 │   └── tests/               # pytest 单元测试
 ├── deploy/                  # Dockerfile 与 docker-compose.yml

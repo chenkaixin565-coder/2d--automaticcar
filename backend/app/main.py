@@ -18,18 +18,21 @@ V2.0 变更：
 import asyncio
 import logging
 import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.rest import create_rest_router
-from app.api.websocket import bind_engine_events, create_ws_router, push_state_loop
+from app.api.websocket import bind_engine_events, create_ws_router, manager, push_state_loop
 from app.core.config import settings
+from app.core.metrics import metrics
+from app.core.ratelimit import limiter
 from app.services.simulation_engine import SimulationEngine
 
 # ---------- 日志配置（要求：系统各环节均留日志） ----------
@@ -98,6 +101,14 @@ async def lifespan(app_instance: FastAPI):
         settings.low_battery_threshold,
         settings.overheat_threshold,
     )
+    logger.info(
+        "访问控制: mode=%s, 限流=%d/min (burst=%d)",
+        settings.auth_mode,
+        settings.rate_limit_per_minute,
+        settings.rate_limit_burst,
+    )
+    if settings.auth_mode == "open-demo":
+        logger.warning("未配置 OPERATOR_KEY：当前为开放演示模式，任何访问者都能修改状态")
     bind_engine_events(engine)
     tick_task = asyncio.create_task(_run_simulation_loop())
     push_task = asyncio.create_task(push_state_loop(engine, settings.tick_interval_ms))
@@ -114,8 +125,8 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="智能巡检机器人二维仿真系统",
     description="基于 FastAPI 的二维栅格机器人仿真后端：A* 寻路、虚拟传感器、规则异常检测、"
-    "一键路线规划、自动清障与地图编辑（V2.1.1）",
-    version="V2.1.1",
+    "一键路线规划、自动清障与地图编辑（V2.2.0）",
+    version="V2.2.0",
     lifespan=lifespan,
 )
 
@@ -130,6 +141,87 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- 访问控制、限流与指标（V2.2.0） ----------
+
+# 这些路径不参与限流，也不需要密钥：健康探针与指标抓取。
+EXEMPT_PATHS = {"/api/v1/health", "/metrics"}
+
+# 会改变系统状态的 HTTP 方法，需要操作密钥。
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def client_ip(request: Request) -> str:
+    """
+    取客户端 IP：反向代理后优先用 X-Forwarded-For 的第一段。
+
+    :param request: 当前请求。
+    :return: 用于限流的客户端标识。
+    """
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def has_operator_permission(request: Request) -> bool:
+    """
+    校验写操作权限。
+
+    - 未配置 OPERATOR_KEY：开放演示模式，放行（启动日志会警告）。
+    - READONLY_MODE=true：一律拒绝写操作。
+    - 配置了 OPERATOR_KEY：必须提供匹配的 X-API-Key（或 ?api_key=）。
+
+    :param request: 当前请求。
+    :return: 是否允许执行写操作。
+    """
+    if settings.readonly_mode:
+        return False
+    if not settings.operator_key:
+        return True
+    supplied = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
+    return bool(supplied) and secrets.compare_digest(supplied, settings.operator_key)
+
+
+@app.middleware("http")
+async def guard_requests(request: Request, call_next):
+    """
+    统一入口守卫：限流 → 鉴权 → 计数。
+
+    :param request: 当前请求。
+    :param call_next: 下游处理函数。
+    :return: 响应。
+    """
+    path = request.url.path
+    if path.startswith("/api/v1") or path == "/metrics":
+        if path not in EXEMPT_PATHS:
+            allowed, wait = limiter.allow(
+                client_ip(request),
+                settings.rate_limit_per_minute,
+                settings.rate_limit_burst,
+            )
+            if not allowed:
+                metrics.inc("rate_limited_total")
+                return JSONResponse(
+                    {"detail": "请求过于频繁，请稍后再试"},
+                    status_code=429,
+                    headers={"Retry-After": str(max(1, int(wait + 0.999)))},
+                )
+        if request.method in WRITE_METHODS and not has_operator_permission(request):
+            metrics.inc("auth_rejected_total")
+            detail = "只读模式：当前部署不允许修改状态" if settings.readonly_mode else "需要操作密钥"
+            return JSONResponse(
+                {"detail": detail},
+                status_code=403 if settings.readonly_mode else 401,
+                headers={"WWW-Authenticate": "ApiKey"},
+            )
+
+    response = await call_next(request)
+    if path.startswith("/api/v1") or path == "/metrics":
+        metrics.inc(f'http_requests_total{{method="{request.method}",status="{response.status_code}"}}')
+    return response
+
 
 # 全局唯一仿真引擎。
 engine = SimulationEngine()
@@ -146,11 +238,39 @@ async def health() -> dict:
     age = None if last is None else round(time.time() - last, 1)
     return {
         "status": "ok",
-        "version": "V2.1.1",
+        "version": "V2.2.0",
         "tick_errors": _TICK_STATE["tick_errors"],
         "last_tick_age_s": age,
         "tick_alive": age is not None and age < max(5.0, settings.tick_interval_ms / 1000 * 10),
+        "auth_mode": settings.auth_mode,
+        "rate_limit_per_minute": settings.rate_limit_per_minute,
+        "ws_clients": len(manager.active_connections),
     }
+
+
+@app.get("/metrics", summary="Prometheus 指标", include_in_schema=False)
+async def prometheus_metrics() -> PlainTextResponse:
+    """以 Prometheus 文本格式暴露运行指标（不含任何业务敏感数据）。"""
+    engine_state = engine.state_dict()["data"]
+    extra = [
+        "# HELP irm_ws_clients 当前 WebSocket 连接数",
+        "# TYPE irm_ws_clients gauge",
+        f"irm_ws_clients {len(manager.active_connections)}",
+        "# HELP irm_engine_battery_percent 机器人剩余电量",
+        "# TYPE irm_engine_battery_percent gauge",
+        f"irm_engine_battery_percent {engine_state['battery']}",
+        "# HELP irm_engine_position 机器人坐标",
+        "# TYPE irm_engine_position gauge",
+        f'irm_engine_position{{axis="x"}} {engine_state["x"]}',
+        f'irm_engine_position{{axis="y"}} {engine_state["y"]}',
+        "# HELP irm_patrol_running 是否正在巡检（1=是）",
+        "# TYPE irm_patrol_running gauge",
+        f"irm_patrol_running {1 if engine_state.get('patrol', {}).get('running') else 0}",
+        "# HELP irm_tick_errors_total 仿真 tick 累计异常次数",
+        "# TYPE irm_tick_errors_total counter",
+        f"irm_tick_errors_total {_TICK_STATE['tick_errors']}",
+    ]
+    return PlainTextResponse(metrics.render(extra), media_type="text/plain; version=0.0.4")
 
 
 # ---------- 前端静态资源托管（单容器部署） ----------

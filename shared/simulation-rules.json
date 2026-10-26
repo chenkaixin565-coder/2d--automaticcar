@@ -1,0 +1,35 @@
+{
+  "$comment": "单一口径的仿真规则。后端 config.py 与前端 simulatedService 均从此文件读取，禁止各写一份。",
+  "schema_version": 1,
+  "tick_interval_ms": 200,
+  "battery": {
+    "move_cost": 0.2,
+    "idle_cost": 0.0,
+    "low_threshold": 20.0,
+    "clear_cost": 5.0,
+    "charge_rate": 1.0
+  },
+  "sensor": {
+    "cell_meters": 0.5,
+    "range_meters": 5.0,
+    "fault_delta": 2.5,
+    "fault_cooldown_s": 10.0,
+    "fault_prob": 0.015
+  },
+  "temperature": {
+    "base": 35.0,
+    "rise_per_move": 0.08,
+    "cool_per_tick": 0.03,
+    "max": 70.0,
+    "noise": 0.5,
+    "overheat_threshold": 55.0
+  },
+  "maps": {
+    "default_width": 30,
+    "default_height": 20,
+    "min_size": 10,
+    "max_size": 60,
+    "pending_limit": 50,
+    "anomaly_history_max": 200
+  }
+}

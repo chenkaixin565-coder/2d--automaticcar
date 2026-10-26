@@ -9,6 +9,8 @@
  * 所有地图均保证起点、巡检点、充电点位于可通行格。
  */
 
+import DEFAULT_MAP from '../../../shared/default-map.json'
+
 /** 生成全空网格（不含边界墙）。 */
 function emptyGrid(width, height) {
   return Array.from({ length: height }, () => Array(width).fill(0))
@@ -38,32 +40,14 @@ function setObstacles(grid, cells) {
  * 与 V1.0 初始版本默认地图一致，保证老用户打开即见熟悉画面。
  */
 function factoryMap() {
-  const width = 30
-  const height = 20
-  const grid = emptyGrid(width, height)
-  addBorder(grid, width, height)
-  setObstacles(grid, [
-    [5, 3], [6, 3], [7, 3], [8, 3],
-    [12, 5], [12, 6], [12, 7],
-    [18, 4], [19, 4], [20, 4],
-    [4, 12], [5, 12], [6, 12],
-    [15, 13], [16, 13], [17, 13], [18, 13],
-    [22, 10], [22, 11], [22, 12],
-    [10, 16], [11, 16], [12, 16],
-  ])
+  // V2.2.0：直接读 shared/default-map.json，后端启动用的是同一份文件。
   return {
-    width,
-    height,
-    grid,
-    start: [1, 1],
-    goals: [
-      [5, 5],
-      [15, 8],
-      [25, 5],
-      [10, 15],
-      [20, 16],
-    ],
-    charge_point: [28, 18],
+    width: DEFAULT_MAP.width,
+    height: DEFAULT_MAP.height,
+    grid: DEFAULT_MAP.grid.map((row) => [...row]),
+    start: [...DEFAULT_MAP.start],
+    goals: DEFAULT_MAP.goals.map((goal) => [...goal]),
+    charge_point: [...DEFAULT_MAP.charge_point],
   }
 }
 

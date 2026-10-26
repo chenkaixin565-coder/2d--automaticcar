@@ -16,9 +16,13 @@ N 个客户端时每个客户端每秒会收到 5N 帧（N² 放大）。现在�
 import asyncio
 import json
 import logging
+import secrets
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.core.config import settings
+from app.core.metrics import metrics
+from app.core.ratelimit import limiter
 from app.services.simulation_engine import SimulationEngine
 
 logger = logging.getLogger("api.websocket")
@@ -117,8 +121,35 @@ def create_ws_router(engine: SimulationEngine) -> APIRouter:
 
     @router.websocket("/api/v1/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        """WebSocket 主处理协程：只负责接收并分发下行指令。"""
+        """WebSocket 主处理协程：先做限流与密钥校验，再接收并分发下行指令。"""
+        forwarded = websocket.headers.get("x-forwarded-for", "")
+        ip = forwarded.split(",")[0].strip() if forwarded else (
+            websocket.client.host if websocket.client else "unknown"
+        )
+        allowed, _ = limiter.allow(
+            ip, settings.rate_limit_per_minute, settings.rate_limit_burst
+        )
+        # 先 accept 再 close，浏览器才能读到 44xx 关闭码；
+        # 握手阶段直接 close 只会得到一个 HTTP 403，前端无法区分"密钥错"与"网络断"。
+        if not allowed:
+            metrics.inc("ws_rejected_total")
+            await websocket.accept()
+            await websocket.close(code=4429, reason="rate limited")
+            return
+        if settings.readonly_mode:
+            metrics.inc("ws_rejected_total")
+            await websocket.accept()
+            await websocket.close(code=4403, reason="readonly mode")
+            return
+        if settings.operator_key:
+            supplied = websocket.query_params.get("api_key", "")
+            if not supplied or not secrets.compare_digest(supplied, settings.operator_key):
+                metrics.inc("ws_rejected_total")
+                await websocket.accept()
+                await websocket.close(code=4401, reason="operator key required")
+                return
         await manager.connect(websocket)
+        metrics.inc("ws_connections_total")
         try:
             while True:
                 raw = await websocket.receive_text()

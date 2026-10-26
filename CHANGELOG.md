@@ -4,6 +4,37 @@
 
 ---
 
+## [V2.2.0] - 2026-10-26 — 单一规则源、访问控制与可观测
+
+> 本轮不加功能，专门补工程底座：把"两套规则"合成一份，把"谁都能改"变成
+> 可鉴权，把"只能看日志"补上指标。
+
+### 新增
+
+- **单一事实源**：新增 `shared/simulation-rules.json`（电量/传感器/温度/地图尺寸）与 `shared/default-map.json`（默认厂房逐格数据）。后端 `app/core/config.py` 与 `app/services/simulation_engine.py`、前端 `services/rules.js` 与 `services/mapPresets.js` 全部读这两份文件
+- **操作鉴权**：`OPERATOR_KEY` 环境变量；开启后写接口要求 `X-API-Key`，WebSocket 要求 `?api_key=`；未配置时保持开放演示并在启动日志 WARNING
+- **只读模式**：`READONLY_MODE=true`，写操作统一 403
+- **按 IP 限流**：令牌桶（默认 240/min、突发 80），HTTP 与 WebSocket 握手共用；超限 429 + `Retry-After`
+- **Prometheus 指标**：`GET /metrics`（请求量、429/401 计数、WS 连接数、电量/坐标/巡检状态）
+- **前端密钥弹窗**：`AuthModal` 在 401 / WS 4401 时弹出，密钥只存 sessionStorage；解锁后自动重连
+- 新增 `backend/tests/test_v22_security.py`（5 例）与 `frontend/src/services/__tests__/sharedRules.test.js`（4 例）
+
+### 变更
+
+- `GET /api/v1/health` 增加 `auth_mode`、`rate_limit_per_minute`、`ws_clients`
+- WebSocket 鉴权失败改为"先 accept 再 close(4401/4403/4429)"，让浏览器能读到关闭码（握手阶段直接拒绝只会得到 HTTP 403，前端无法区分密钥错误与网络中断）
+- Dockerfile 构建期 `COPY shared/ /shared/`、运行期 `COPY shared/ ./shared/`，镜像内保持同一份规则
+- `render.yaml` 增加限流环境变量与 `OPERATOR_KEY` / `READONLY_MODE` 注释示例
+- 版本号统一 **V2.2.0**
+
+### 测试
+
+- 后端 **75/75 通过**（新增鉴权 401/200、只读 403、限流 429、指标文本、共享规则一致性）
+- 前端 **61/61 通过**（新增共享规则与默认地图逐格比对），`eslint` 0 error / 0 warning，`vite build` 通过
+- 手工验证：`OPERATOR_KEY=testkey` 下 GET 200 / 无密钥 POST 401 / 正确密钥 200；WS 无密钥 4401、正确密钥收到 state；页面弹密钥框 → 解锁 → 前进成功
+
+---
+
 ## [V2.1.1] - 2026-10-26 — 预览取景与移动端地图入口
 
 > 本轮只修体验问题，不动仿真规则。

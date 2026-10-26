@@ -6,6 +6,8 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ .
+# 共享规则与默认地图（前端构建时 import ../../../shared/*.json）
+COPY shared/ /shared/
 # 同源部署：前端由后端托管，构建期开启自动接入后端开关
 RUN VITE_BACKEND_SAME_ORIGIN=true npm run build
 
@@ -21,6 +23,8 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./backend/
+# 运行时读取 shared/simulation-rules.json 与 shared/default-map.json
+COPY shared/ ./shared/
 COPY --from=frontend /frontend/dist ./backend/static/dist
 
 WORKDIR /app/backend

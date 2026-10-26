@@ -20,6 +20,7 @@
 
 import { RobotService } from './robotService.js'
 import { getPreset } from './mapPresets.js'
+import { authHeaders, clearApiKey, getApiKey, setApiKey } from './apiKey.js'
 
 /** localStorage 中地图数据的键名，与 SimulatedService 共用。 */
 const STORAGE_MAP_KEY = 'irm_map_v1'
@@ -47,6 +48,8 @@ export class RemoteService extends RobotService {
     this._ws = null
     /** 断开提示节流标记：冷启动/网络波动期间只通知一次，避免反复弹窗。 */
     this._disconnectNotified = false
+    /** 最近一次鉴权失败信息（V2.2.0）：供界面挂载后补弹密钥框。 */
+    this._authState = null
     /** 标识本服务为远程后端实现，供上层区分数据源。 */
     this.isRemote = true
 
@@ -80,16 +83,30 @@ export class RemoteService extends RobotService {
    */
   _connect() {
     try {
-      this._ws = new WebSocket(this._wsUrl)
+      // V2.2.0：密钥通过查询参数传给 WebSocket（浏览器无法自定义握手头）。
+      const key = getApiKey()
+      const url = key ? `${this._wsUrl}?api_key=${encodeURIComponent(key)}` : this._wsUrl
+      this._ws = new WebSocket(url)
       this._ws.onopen = () => {
         this._connected = true
         this._disconnectNotified = false
+    /** 最近一次鉴权失败信息（V2.2.0）：供界面挂载后补弹密钥框。 */
+    this._authState = null
         this._fetchInitial()
         this._emitEvent('notice', { message: '已连接到后端仿真服务' })
       }
       this._ws.onmessage = (event) => this._handleFrame(JSON.parse(event.data))
-      this._ws.onclose = () => {
+      this._ws.onclose = (event) => {
         this._connected = false
+        // 4401/4403：密钥缺失、错误或部署为只读，继续重连没有意义。
+        if (event && (event.code === 4401 || event.code === 4403)) {
+          this._requireAuth({
+            code: event.code,
+            readonly: event.code === 4403,
+            message: event.code === 4403 ? '当前部署为只读模式' : '需要操作密钥才能控制机器人',
+          })
+          return
+        }
         // 冷启动（如 Render 免费套餐休眠唤醒）期间重连可能持续数十秒，
         // 断开提示只发一次，成功连上后由 onopen 重置标记。
         if (!this._disconnectNotified) {
@@ -195,9 +212,17 @@ export class RemoteService extends RobotService {
    * @returns {Promise<Object>} 响应 JSON。
    */
   async _rest(method, path, body) {
-    const options = { method, headers: { 'Content-Type': 'application/json' } }
+    const options = { method, headers: authHeaders({ 'Content-Type': 'application/json' }) }
     if (body !== undefined) options.body = JSON.stringify(body)
     const response = await fetch(this._baseUrl + path, options)
+    if (response.status === 401 || response.status === 403) {
+      this._requireAuth({
+        code: response.status,
+        readonly: response.status === 403,
+        message: response.status === 403 ? '当前部署为只读模式' : '需要操作密钥才能修改状态',
+      })
+      throw new Error(`REST ${method} ${path} 失败：HTTP ${response.status}（需要操作密钥）`)
+    }
     if (!response.ok) {
       throw new Error(`REST ${method} ${path} 失败：HTTP ${response.status}`)
     }
@@ -221,6 +246,57 @@ export class RemoteService extends RobotService {
       return true
     }
     return false
+  }
+
+  /**
+   * 记录并广播"需要鉴权"状态（V2.2.0）。
+   *
+   * 连接失败可能早于界面挂载，因此除了发事件还要留一份状态，
+   * 由 App 在 onMounted 时主动读取，避免弹窗丢失。
+   *
+   * @param {{code: number, readonly: boolean, message: string}} info - 鉴权信息。
+   */
+  _requireAuth(info) {
+    this._authState = info
+    this._emitEvent('auth_required', info)
+  }
+
+  /** 读取最近一次鉴权失败信息；没有则为 null。 */
+  getAuthState() {
+    return this._authState
+  }
+
+  /**
+   * 设置操作密钥并立即重连（V2.2.0）。
+   *
+   * @param {string} key - 后端 OPERATOR_KEY 对应的明文。
+   */
+  setOperatorKey(key) {
+    setApiKey((key || '').trim())
+    this._disconnectNotified = false
+    /** 最近一次鉴权失败信息（V2.2.0）：供界面挂载后补弹密钥框。 */
+    this._authState = null
+    this._connect()
+  }
+
+  /** 清除操作密钥并断开（回到只读浏览）。 */
+  logoutOperator() {
+    clearApiKey()
+    if (this._ws) {
+      try {
+        this._ws.onclose = null
+        this._ws.close()
+      } catch {
+        // 忽略关闭异常
+      }
+      this._ws = null
+    }
+    this._connected = false
+  }
+
+  /** 当前是否已配置操作密钥。 */
+  get hasOperatorKey() {
+    return Boolean(getApiKey())
   }
 
   /** 后端基地址（同源时为空字符串），供地图库等 REST 调用复用。 */

@@ -25,56 +25,36 @@ import { MAP_PRESETS, getPreset } from './mapPresets.js'
 import { enforceBorder, isBoundaryCell } from '../utils/mapBoundary.js'
 import { validateMap } from '../utils/mapIO.js'
 
+/**
+ * 仿真规则全部来自 `shared/simulation-rules.json`（与后端同一份），
+ * 这里只保留纯前端使用的展示常量（快照上限、存储键名）。
+ */
+import {
+  ANOMALY_LIMIT,
+  BATTERY_IDLE_COST,
+  BATTERY_MOVE_COST,
+  CELL_METERS,
+  CHARGE_RATE,
+  CLEAR_OBSTACLE_COST,
+  LOW_BATTERY_THRESHOLD,
+  MAX_MAP_SIZE,
+  MIN_MAP_SIZE,
+  OVERHEAT_THRESHOLD,
+  PENDING_LIMIT,
+  SENSOR_FAULT_COOLDOWN_MS,
+  SENSOR_JUMP_THRESHOLD,
+  SENSOR_MAX_CELLS,
+  TEMP_BASE,
+  TEMP_COOL_PER_TICK,
+  TEMP_MAX,
+  TEMP_RISE_PER_MOVE,
+} from './rules.js'
+
 /** 仿真 tick 间隔，单位毫秒，与后端 WebSocket 推送频率一致。 */
 const TICK_MS = 200
 
-/** 每个栅格对应的实际距离（米）。 */
-const CELL_METERS = 0.5
-
-/** 传感器最大量程（米）。 */
-const SENSOR_RANGE_METERS = 5.0
-
-/** 传感器最大量程对应的栅格数。 */
-const SENSOR_MAX_CELLS = Math.floor(SENSOR_RANGE_METERS / CELL_METERS)
-
-/** 每移动一格消耗的电量百分比。 */
-const BATTERY_MOVE_COST = 0.2
-
-/** 待机每 tick 的耗电量（V2.0 默认 0，避免演示时静默掉电）。 */
-const BATTERY_IDLE_COST = 0.0
-
-/** 充电点每个 tick 补充的电量百分比。 */
-const CHARGE_RATE = 1.0
-
-/** 低电量告警阈值。 */
-const LOW_BATTERY_THRESHOLD = 20.0
-
-/** 每清除一处障碍消耗的电量百分比。 */
-const CLEAR_OBSTACLE_COST = 5.0
-
-/** 温度模型参数（与后端 config.py 对齐）。 */
-const TEMP_BASE = 35.0
-const TEMP_RISE_PER_MOVE = 0.08
-const TEMP_COOL_PER_TICK = 0.03
-const TEMP_MAX = 70.0
-
-/** 过热告警阈值（摄氏度）。 */
-const OVERHEAT_THRESHOLD = 55.0
-
-/** 传感器单通道相邻帧突变告警阈值（米）。 */
-const SENSOR_JUMP_THRESHOLD = 2.5
-
-/** 同一通道两次告警的最小冷却时间（毫秒）。 */
-const SENSOR_FAULT_COOLDOWN_MS = 10000
-
 /** 同一类异常的最小冷却时间（毫秒），避免重复刷屏。 */
 const ANOMALY_COOLDOWN_MS = 5000
-
-/** 异常历史最多保留条数。 */
-const ANOMALY_LIMIT = 200
-
-/** 待清障记录上限。 */
-const PENDING_LIMIT = 50
 
 /** 回放快照上限。 */
 const SNAPSHOT_LIMIT = 3000
@@ -84,10 +64,6 @@ const STORAGE_MAP_KEY = 'irm_map_v1'
 
 /** localStorage 中当前内置地图预设标识的键名。 */
 const STORAGE_PRESET_KEY = 'irm_map_preset_v1'
-
-/** 新建地图允许的尺寸范围（与后端一致）。 */
-const MIN_MAP_SIZE = 10
-const MAX_MAP_SIZE = 60
 
 /**
  * 本地仿真器服务类。

@@ -31,3 +31,14 @@ services:
         value: "200"
       - key: LOG_LEVEL
         value: "INFO"
+      # 访问控制（V2.2.0）：默认开放演示，任何写操作都放行。
+      # 要演示"只有持有密钥的人能操作"，取消下面两行注释并换一个随机长串，
+      # 前端首次写操作会弹出密钥输入框（密钥只存 sessionStorage）。
+      # - key: OPERATOR_KEY
+      #   value: "<换成你的随机长串>"
+      # 只读展示（V2.2.0）：开启后所有写操作返回 403，适合公开展示但不允许改动。
+      # - key: READONLY_MODE
+      #   value: "true"
+      # 限流（V2.2.0）：每客户端每分钟请求数，0 表示关闭。
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "240"

@@ -11,6 +11,7 @@
  */
 
 import { validateMap } from '../utils/mapIO.js'
+import { authHeaders } from './apiKey.js'
 
 /** 本机地图库的存储键。 */
 const LOCAL_KEY = 'irm_map_library_v1'
@@ -136,7 +137,7 @@ export function cloudEnabled(baseUrl) {
  * @returns {Promise<Array<Object>>} 元信息数组。
  */
 export async function listCloud(baseUrl) {
-  const res = await fetch(`${baseUrl}/api/v1/maps`)
+  const res = await fetch(`${baseUrl}/api/v1/maps`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
@@ -153,7 +154,7 @@ export async function listCloud(baseUrl) {
 export async function saveCloud(baseUrl, name, map, id = null) {
   const res = await fetch(`${baseUrl}/api/v1/maps`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ name, map, id }),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -168,7 +169,7 @@ export async function saveCloud(baseUrl, name, map, id = null) {
  * @returns {Promise<Object>} 完整地图。
  */
 export async function loadCloud(baseUrl, id) {
-  const res = await fetch(`${baseUrl}/api/v1/maps/${id}`)
+  const res = await fetch(`${baseUrl}/api/v1/maps/${id}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
@@ -180,6 +181,6 @@ export async function loadCloud(baseUrl, id) {
  * @param {string} id - 地图 id。
  */
 export async function removeCloud(baseUrl, id) {
-  const res = await fetch(`${baseUrl}/api/v1/maps/${id}`, { method: 'DELETE' })
+  const res = await fetch(`${baseUrl}/api/v1/maps/${id}`, { method: 'DELETE', headers: authHeaders() })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }

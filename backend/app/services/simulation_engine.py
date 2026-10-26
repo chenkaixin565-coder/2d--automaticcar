@@ -37,6 +37,7 @@ from app.core.constants import (
     MODE_MANUAL,
     MODE_PATROL,
 )
+from app.core.shared import load_default_map
 from app.models.map import GridMap
 from app.services.anomaly import create_detector
 from app.services.patrol import PatrolManager, find_min_obstacle_to_remove, order_goals_by_nearest
@@ -48,31 +49,39 @@ logger = logging.getLogger("simulation.engine")
 
 def _default_map(width: int, height: int) -> GridMap:
     """
-    生成默认地图："默认厂房"预设，与前端 mapPresets.factory 保持一致。
+    生成默认地图：读取 `shared/default-map.json`。
 
-    V2.0 起前后端使用同一张默认地图（30x20 / 23 处墙体），避免同一系统
-    两个入口（GitHub Pages 离线版、Render 全栈版）画面完全不同。
+    V2.2.0 起前后端共用同一份地图文件，不再各自维护一份墙体坐标列表。
+    环境变量把尺寸改成非标准值时，退化为"边界墙 + 共享起点/巡检点"，
+    避免把 30x20 的墙硬塞进别的尺寸。
 
-    :param width: 地图宽度。
-    :param height: 地图高度。
+    :param width: 地图宽度（通常来自配置）。
+    :param height: 地图高度（通常来自配置）。
     :return: GridMap 实例。
     """
+    data = load_default_map()
+    if width == data["width"] and height == data["height"]:
+        return GridMap(
+            width=data["width"],
+            height=data["height"],
+            grid=[list(row) for row in data["grid"]],
+            start=tuple(data["start"]),
+            goals=[list(goal) for goal in data["goals"]],
+            charge_point=tuple(data["charge_point"]),
+        )
+
     grid = [[0] * width for _ in range(height)]
-    # 与 frontend/src/services/mapPresets.js 的 factory 预设保持一致。
-    walls = [
-        (5, 3), (6, 3), (7, 3), (8, 3),
-        (12, 5), (12, 6), (12, 7),
-        (18, 4), (19, 4), (20, 4),
-        (4, 12), (5, 12), (6, 12),
-        (15, 13), (16, 13), (17, 13), (18, 13),
-        (22, 10), (22, 11), (22, 12),
-        (10, 16), (11, 16), (12, 16),
+    for x in range(width):
+        grid[0][x] = CELL_OBSTACLE
+        grid[height - 1][x] = CELL_OBSTACLE
+    for y in range(height):
+        grid[y][0] = CELL_OBSTACLE
+        grid[y][width - 1] = CELL_OBSTACLE
+    goals = [
+        [x, y]
+        for x, y in data["goals"]
+        if 0 < x < width - 1 and 0 < y < height - 1 and grid[y][x] == 0
     ]
-    for x, y in walls:
-        if 0 < x < width - 1 and 0 < y < height - 1:
-            grid[y][x] = CELL_OBSTACLE
-    goals = [[5, 5], [15, 8], [25, 5], [10, 15], [20, 16]]
-    goals = [[x, y] for x, y in goals if 0 < x < width - 1 and 0 < y < height - 1]
     return GridMap(
         width=width,
         height=height,
