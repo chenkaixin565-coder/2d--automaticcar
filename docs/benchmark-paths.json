@@ -1,0 +1,32 @@
+{
+  "tool": "backend/tools/benchmark_paths.py",
+  "seed": 20261027,
+  "results": [
+    {
+      "size": 50,
+      "density": 0.2,
+      "samples": 100,
+      "attempts": 100,
+      "astar_visited_mean": 178.86,
+      "bfs_visited_mean": 881.76,
+      "astar_ms_mean": 0.24094094522297382,
+      "bfs_ms_mean": 0.5815757904201746,
+      "astar_ms_p95": 0.631481409072876,
+      "same_cost_ratio": 1.0,
+      "expand_ratio": 0.20284431137724554
+    },
+    {
+      "size": 200,
+      "density": 0.2,
+      "samples": 20,
+      "attempts": 20,
+      "astar_visited_mean": 2333.7,
+      "bfs_visited_mean": 15563.1,
+      "astar_ms_mean": 3.3678696490824223,
+      "bfs_ms_mean": 11.870204517617822,
+      "astar_ms_p95": 9.037051349878311,
+      "same_cost_ratio": 1.0,
+      "expand_ratio": 0.14995084526861613
+    }
+  ]
+}
