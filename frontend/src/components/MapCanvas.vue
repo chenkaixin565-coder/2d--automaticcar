@@ -116,6 +116,7 @@ const props = defineProps({
 const emit = defineEmits([
   'view-change',
   'edit-obstacle',
+  'edit-cell',
   'clear-obstacle',
   'set-goal',
   'set-start',

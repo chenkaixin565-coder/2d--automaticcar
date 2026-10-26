@@ -2,7 +2,8 @@
   <Teleport to="body">
     <div
       v-if="visible"
-      class="fixed z-[70] rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl"
+      ref="panelRef"
+      class="fixed z-[70] rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl max-w-[calc(100vw-1rem)]"
       :style="{ left: `${pos.x}px`, top: `${pos.y}px`, width: `${width}px` }"
     >
       <!-- 拖动条：按住这里可以拖到屏幕任意位置 -->
@@ -53,7 +54,7 @@
  * 按住标题栏拖动，位置限制在视口内；可最小化为只剩标题栏。
  */
 
-import { onMounted, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -66,6 +67,7 @@ defineEmits(['close'])
 const minimized = ref(false)
 const pos = reactive({ x: 0, y: 0 })
 const dragOffset = reactive({ x: 0, y: 0 })
+const panelRef = ref(null)
 
 /** 把位置限制在可视区域内，避免拖出屏幕后找不回来。 */
 function clamp() {
@@ -75,15 +77,21 @@ function clamp() {
   pos.y = Math.min(Math.max(8, pos.y), maxY)
 }
 
-/** 初始位置：桌面靠右下，手机靠底部居中。 */
+/**
+ * 初始位置：桌面靠左下；手机贴着底部工具条上沿，尽量不压住地图中央。
+ * 高度按实际渲染结果测量，避免固定百分比在不同内容下飘。
+ */
 function resetPosition() {
+  const el = panelRef.value
+  const height = el ? el.offsetHeight : window.innerWidth < 768 ? 360 : 320
   if (window.innerWidth < 768) {
-    pos.x = Math.max(8, (window.innerWidth - props.width) / 2)
-    pos.y = Math.max(80, window.innerHeight * 0.42)
+    pos.x = Math.max(8, (window.innerWidth - Math.min(props.width, window.innerWidth - 16)) / 2)
+    // 底部快捷控制条约 150~170px 高，浮窗停在上方
+    pos.y = Math.max(72, window.innerHeight - height - 158)
   } else {
     // 桌面端默认靠左下：不挡右侧控制面板，也不压住地图中央的路线
     pos.x = 24
-    pos.y = Math.max(96, window.innerHeight - 380)
+    pos.y = Math.max(96, window.innerHeight - height - 24)
   }
   clamp()
 }
@@ -108,15 +116,19 @@ function stopDrag() {
 
 watch(
   () => props.visible,
-  (visible) => {
-    if (visible) {
-      minimized.value = false
-      resetPosition()
-    }
+  async (visible) => {
+    if (!visible) return
+    minimized.value = false
+    await nextTick()
+    resetPosition()
+    // 内容（列表/图表）渲染完高度可能再变，下一帧再校正一次
+    requestAnimationFrame(() => resetPosition())
   }
 )
 
-onMounted(() => {
-  if (props.visible) resetPosition()
+onMounted(async () => {
+  if (!props.visible) return
+  await nextTick()
+  resetPosition()
 })
 </script>

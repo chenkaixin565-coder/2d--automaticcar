@@ -8,7 +8,8 @@
           v-model="name"
           maxlength="40"
           placeholder="地图名称"
-          class="px-2 py-1 text-sm rounded border border-gray-200 dark:border-gray-700 bg-transparent w-40">
+          class="px-2 py-1 text-sm rounded border border-gray-200 dark:border-gray-700 bg-transparent w-40"
+        >
 
         <span class="mx-1 h-5 w-px bg-gray-200 dark:bg-gray-700" />
 

@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.1</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.1.1</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -123,7 +123,7 @@
           @new-map="onOpenNewMap"
           @restart="onRestart"
           @clear-nearest="onClearNearest"
-          @open-library="showLibrary = true"
+          @open-library="onOpenLibrary"
           @move="onMove"
           @reset="onReset"
           @resolve-fault="onResolveFault"
@@ -188,6 +188,7 @@
         @fit-map="fitMap"
         @toggle-detail="drawerOpen = !drawerOpen"
         @open-plan="drawerOpen = true"
+        @open-library="onOpenLibrary"
       />
 
       <!-- 移动端详情：可拖动浮窗（V2.1） -->
@@ -197,7 +198,7 @@
         :width="340"
         @close="drawerOpen = false"
       >
-        <div class="flex flex-col gap-3 max-h-[52vh] overflow-y-auto pr-1">
+        <div class="flex flex-col gap-3 max-h-[30vh] overflow-y-auto pr-1">
           <RoutePlanPanel
             :plan="routePlan"
             :map-goals="map.goals"
@@ -615,6 +616,8 @@ function getContainerRect() {
 }
 
 function fitMap() {
+  // 用户主动"适配地图"后，预览的还原点失效（否则关预览会把视角抢回去）
+  viewBeforePreview = null
   const rect = getContainerRect()
   if (!rect) return
   const mapW = map.width * CELL_PIXELS
@@ -747,10 +750,20 @@ function onStopPatrol() {
  */
 function onPlanRoute(goal) {
   service.planRoute(goal)
+  // 手机端：预览浮层要独占视野，先把详情浮窗收起来
+  if (window.innerWidth < 768) drawerOpen.value = false
 }
 
+/** 打开预览前保存的视角，关闭预览时还原（V2.1.1）。 */
+let viewBeforePreview = null
+/** 点"按此路线巡检"后不还原视角，避免刚出发就跳回原视野。 */
+let keepViewOnPlanEnd = false
+
 /**
- * 把视图缩放到能看全整条路线的范围（V2.1：预览不再只是画条线就完事）。
+ * 把视角带到路线附近：只保证"看得到整条路线"，不做夸张放大。
+ *
+ * V2.1.1 起：缩放上限为 90%，且不超过预览前缩放的 1.8 倍，
+ * 短路线（包围盒只有两三格）不会再被放大到 200% 而看不出地图全貌。
  *
  * @param {number[][]} path - 路线坐标数组。
  */
@@ -758,6 +771,9 @@ function fitRoute(path) {
   if (!path || path.length === 0) return
   const rect = getContainerRect()
   if (!rect) return
+  if (!viewBeforePreview) {
+    viewBeforePreview = { scale: scale.value, offset: { ...offset.value } }
+  }
   const xs = path.map((p) => p[0])
   const ys = path.map((p) => p[1])
   const minX = Math.min(...xs)
@@ -766,19 +782,67 @@ function fitRoute(path) {
   const maxY = Math.max(...ys)
   const w = (maxX - minX + 1) * CELL_PIXELS
   const h = (maxY - minY + 1) * CELL_PIXELS
-  const padding = 80
-  const s = Math.max(0.3, Math.min((rect.width - padding) / w, (rect.height - padding) / h, 2))
+  const padding = 60
+  // 手机端预览卡片停在下方，路线尽量落在上半屏，避免被浮层压住
+  const compact = rect.width < 768
+  const availH = compact ? rect.height * 0.55 : rect.height
+  const fitScale = Math.min((rect.width - padding) / w, (availH - padding) / h)
+  // 上限：最多 90%；同时最多是原视角的 1.8 倍（至少 55%，保证小屏也看得清路线）
+  const cap = Math.min(0.9, Math.max(0.55, viewBeforePreview.scale * 1.8))
+  const s = Math.max(0.28, Math.min(fitScale, cap))
   const centerX = ((minX + maxX + 1) / 2) * CELL_PIXELS
   const centerY = ((minY + maxY + 1) / 2) * CELL_PIXELS
-  offset.value = { x: rect.width / 2 - centerX * s, y: rect.height / 2 - centerY * s }
+  const targetX = rect.width / 2
+  const targetY = compact ? rect.height * 0.26 : rect.height / 2
+  const mapW = map.width * CELL_PIXELS * s
+  const mapH = map.height * CELL_PIXELS * s
+  const rawY = targetY - centerY * s
+  offset.value = {
+    x: clampOffset(targetX - centerX * s, rect.width, mapW),
+    // 手机端不夹纵向：卡片盖住下半屏，宁可地图下方留白，也要把路线顶到可见区域
+    y: compact ? rawY : clampOffset(rawY, rect.height, mapH),
+  }
   scale.value = s
 }
 
-// 规划结果一到就把视角带过去，避免"点了按钮却看不到路线在哪"
+/**
+ * 限制平移量：地图比视口大时按边缘对齐，地图比视口小时居中，
+ * 避免"路线居中了但地图被推到只剩一大片空白"。
+ *
+ * @param {number} value - 期望偏移。
+ * @param {number} viewSize - 视口尺寸。
+ * @param {number} contentSize - 地图渲染尺寸。
+ * @returns {number} 修正后的偏移。
+ */
+function clampOffset(value, viewSize, contentSize) {
+  if (contentSize <= viewSize) return (viewSize - contentSize) / 2
+  return Math.min(0, Math.max(viewSize - contentSize, value))
+}
+
+/** 关闭预览时回到打开前的视角，避免"看完路线地图停在一个角落"。 */
+function restoreViewBeforePreview() {
+  if (!viewBeforePreview) return
+  scale.value = viewBeforePreview.scale
+  offset.value = { ...viewBeforePreview.offset }
+  viewBeforePreview = null
+}
+
+// 规划结果一到就把视角带过去；预览结束后还原（除非是"按此路线巡检"）
 watch(
   () => routePlan.value,
   (plan) => {
-    if (plan && plan.path && plan.path.length > 1) fitRoute(plan.path)
+    if (plan && plan.path && plan.path.length > 1) {
+      fitRoute(plan.path)
+      return
+    }
+    if (!plan) {
+      if (keepViewOnPlanEnd) {
+        keepViewOnPlanEnd = false
+        viewBeforePreview = null
+        return
+      }
+      restoreViewBeforePreview()
+    }
   }
 )
 
@@ -793,6 +857,7 @@ function onPlanStart() {
       goals.unshift(target)
     }
   }
+  keepViewOnPlanEnd = true
   service.startPatrol(goals)
   service.cancelPlan()
 }
@@ -877,6 +942,12 @@ function onLoadMap(loaded) {
   showLibrary.value = false
   fitMap()
   addToast('notice', '地图已载入')
+}
+
+/** 打开地图库：移动端先收起详情浮窗，避免两层浮层叠在一起。 */
+function onOpenLibrary() {
+  drawerOpen.value = false
+  showLibrary.value = true
 }
 
 /**

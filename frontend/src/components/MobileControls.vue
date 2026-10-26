@@ -97,7 +97,15 @@
               : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300'"
             @click="$emit('resolve-fault')"
           >
-            一键排障
+            排障
+          </button>
+          <button
+            type="button"
+            class="flex-1 px-2 py-1.5 text-xs rounded-lg border border-primary-200 dark:border-primary-800 text-primary-700 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+            title="保存 / 载入 / 导入导出 / 新建地图"
+            @click="$emit('open-library')"
+          >
+            📚 地图库
           </button>
           <button
             type="button"
@@ -137,14 +145,16 @@ const emit = defineEmits([
   'fit-map',
   'toggle-detail',
   'open-plan',
+  'open-library',
 ])
 
 const editModes = [
   { key: 'obstacle', label: '障碍' },
+  { key: 'barrier', label: '屏障' },
+  { key: 'erase', label: '擦除' },
   { key: 'goal', label: '巡检点' },
   { key: 'start', label: '起点' },
   { key: 'charge', label: '充电' },
-  { key: 'clear', label: '清障' },
 ]
 
 function emitMove(dx, dy) {

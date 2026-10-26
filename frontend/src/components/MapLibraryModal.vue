@@ -61,7 +61,8 @@
                   v-model="editingName"
                   class="px-1.5 py-0.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-transparent w-40"
                   @keyup.enter="commitRename(item)"
-                  @blur="commitRename(item)">
+                  @blur="commitRename(item)"
+                >
                 <span v-else class="text-sm font-medium truncate">{{ item.name }}</span>
                 <button
                   v-if="editingId !== item.id"
