@@ -217,4 +217,47 @@ export class RobotService {
   onEvent(_callback) {
     throw new Error('子类必须实现 onEvent 方法')
   }
+
+  /**
+   * 重新开始（V2.0）：复位机器人但保留已走过的尾迹。
+   * @returns {Promise<void>|void}
+   */
+  restart() {
+    throw new Error('子类必须实现 restart 方法')
+  }
+
+  /**
+   * 新建空白地图（V2.0）：只保留四周边界墙，机器人复位到新起点。
+   * @param {number} _width - 宽度（列数）。
+   * @param {number} _height - 高度（行数）。
+   * @returns {Promise<void>|void}
+   */
+  newMap(_width, _height) {
+    throw new Error('子类必须实现 newMap 方法')
+  }
+
+  /**
+   * 巡检遇阻决策（V2.0）：clear 清除并继续 / skip 跳过并记录 / stop 停止。
+   * @param {'clear'|'skip'|'stop'} _action - 决策动作。
+   * @returns {Promise<void>|void}
+   */
+  patrolDecision(_action) {
+    throw new Error('子类必须实现 patrolDecision 方法')
+  }
+
+  /**
+   * 一键清除待清障记录中离机器人最近的一处（V2.0）。
+   * @returns {Promise<void>|void}
+   */
+  clearNearestPending() {
+    throw new Error('子类必须实现 clearNearestPending 方法')
+  }
+
+  /**
+   * 获取待清障记录（V2.0）。
+   * @returns {Promise<number[][]>|number[][]} 坐标数组。
+   */
+  getPending() {
+    throw new Error('子类必须实现 getPending 方法')
+  }
 }

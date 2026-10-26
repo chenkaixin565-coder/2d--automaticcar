@@ -19,6 +19,7 @@ rule 策略在仅安装基础依赖的环境下也能正常运行。
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -74,10 +75,15 @@ class RuleAnomalyDetector(BaseAnomalyDetector):
     """规则异常检测器（阈值法）。"""
 
     def __init__(self) -> None:
-        """初始化检测器并创建空的历史事件列表。"""
-        self._history: list[dict] = []
+        """初始化检测器并创建历史事件容器。"""
+        # V2.0：历史事件改为有界队列，避免长时间运行内存与接口响应体膨胀。
+        self._history: deque = deque(maxlen=config.settings.anomaly_history_max)
         # 已触发的持续型异常，避免同一异常每个 tick 重复推送。
         self._active: set[str] = set()
+        # 上一帧三向读数，用于"同一通道跨帧"突变判定。
+        self._prev_readings: dict[str, Optional[float]] = {}
+        # 每个通道上次告警时间戳（秒），用于冷却去重。
+        self._last_fault_at: dict[str, float] = {}
 
     def update(self, reading: dict) -> list[dict]:
         """
@@ -89,7 +95,6 @@ class RuleAnomalyDetector(BaseAnomalyDetector):
         battery = reading.get("battery", 100.0)
         temperature = reading.get("temperature", 0.0)
         position = reading.get("position", [0, 0])
-        sensors = reading
         triggered: list[dict] = []
 
         # 规则 1：低电量（持续型，恢复到阈值以上后重置）。
@@ -120,20 +125,34 @@ class RuleAnomalyDetector(BaseAnomalyDetector):
         else:
             self._active.discard("overheat")
 
-        # 规则 3：传感器读数突变（瞬时型，每次突变都上报）。
-        readings = [sensors.get(key) for key in ("front", "left", "right")]
-        valid = [value for value in readings if value is not None]
-        for i in range(1, len(valid)):
-            delta = abs(valid[i] - valid[i - 1])
-            if delta > config.settings.sensor_fault_delta:
-                triggered.append(
-                    self._record(
-                        ANOMALY_SENSOR_FAULT,
-                        f"传感器读数突变 {delta:.1f}m，疑似故障",
-                        position,
-                    )
+        # 规则 3：传感器读数突变（瞬时型）。
+        # V2.0 修正：原实现把同一 tick 的 front/left/right 当作时间序列互相比，
+        # 只要机器人靠近墙（前 5m、侧 0.5m）就会误报"读数突变"。正确语义是
+        # "同一通道的这一帧 vs 上一帧"，与前端 simulatedService 保持一致。
+        now = time.time()
+        cooldown = config.settings.sensor_fault_cooldown_s
+        for channel in ("front", "left", "right"):
+            current = reading.get(channel)
+            previous = self._prev_readings.get(channel)
+            self._prev_readings[channel] = current
+            if current is None or previous is None:
+                continue
+            delta = abs(current - previous)
+            if delta <= config.settings.sensor_fault_delta:
+                continue
+            last = self._last_fault_at.get(channel, 0.0)
+            if now - last < cooldown:
+                continue
+            self._last_fault_at[channel] = now
+            label = {"front": "正前方", "left": "左侧", "right": "右侧"}[channel]
+            triggered.append(
+                self._record(
+                    ANOMALY_SENSOR_FAULT,
+                    f"{label}传感器读数突变 {delta:.1f}m，疑似故障",
+                    position,
                 )
-                break  # 同一 tick 只报一次，避免刷屏。
+            )
+            break  # 同一 tick 只报一次，避免刷屏。
 
         return triggered
 
@@ -145,6 +164,8 @@ class RuleAnomalyDetector(BaseAnomalyDetector):
         """清空历史异常事件。"""
         self._history.clear()
         self._active.clear()
+        self._prev_readings.clear()
+        self._last_fault_at.clear()
 
 
 class MLAnomalyDetector(BaseAnomalyDetector):
@@ -373,6 +394,14 @@ def create_detector(strategy: Optional[str] = None) -> BaseAnomalyDetector:
     """
     strategy = strategy or config.settings.anomaly_strategy
     if strategy == "ml":
+        # 基础镜像不装 numpy/scikit-learn（见 requirements-ml.txt）：
+        # 缺依赖时自动降级为规则基线，避免仿真 tick 抛 ImportError 后整个循环停摆。
+        try:
+            import numpy  # noqa: F401
+            import sklearn  # noqa: F401
+        except ImportError:
+            logger.warning("未安装 numpy/scikit-learn，ml 策略自动降级为规则基线")
+            return RuleAnomalyDetector()
         return MLAnomalyDetector()
     if strategy != "rule":
         logger.warning("未知异常检测策略 %r，回退到规则基线", strategy)

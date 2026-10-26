@@ -91,6 +91,54 @@
       </button>
     </label>
 
+    <!-- 尾迹显示开关（V2.0：默认隐藏） -->
+    <label class="flex items-center justify-between gap-2 px-1 cursor-pointer select-none">
+      <span class="text-xs text-gray-600 dark:text-gray-300">显示尾迹</span>
+      <button
+        type="button"
+        role="switch"
+        :aria-checked="showTrail ? 'true' : 'false'"
+        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+        :class="showTrail ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-700'"
+        @click="$emit('toggle-trail')"
+      >
+        <span
+          class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+          :class="showTrail ? 'translate-x-[1.15rem]' : 'translate-x-[0.15rem]'"
+        />
+      </button>
+    </label>
+
+    <!-- 地图操作：重新开始（保留尾迹） / 新建空白地图 -->
+    <div class="grid grid-cols-2 gap-2">
+      <button
+        type="button"
+        class="px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+        title="机器人回到起点，但保留已走过的尾迹"
+        @click="$emit('restart')"
+      >
+        重新开始
+      </button>
+      <button
+        type="button"
+        class="px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+        title="清空当前地图，只保留四周边界墙"
+        @click="$emit('new-map')"
+      >
+        新建地图
+      </button>
+    </div>
+
+    <!-- 一键清最近：清除待清障记录里离机器人最近的一处 -->
+    <button
+      type="button"
+      class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
+      :disabled="!pendingCount"
+      @click="$emit('clear-nearest')"
+    >
+      一键清最近{{ pendingCount ? `（${pendingCount} 处待清）` : '（无待清障）' }}
+    </button>
+
     <!-- 自动巡检 -->
     <div class="space-y-2">
       <div class="flex gap-2">
@@ -113,13 +161,13 @@
       </div>
       <div v-if="patrolStatus.running" class="space-y-1">
         <div class="flex justify-between text-xs text-gray-600 dark:text-gray-300">
-          <span>进度</span>
-          <span>{{ patrolStatus.progress }}%</span>
+          <span>进度 {{ patrolStatus.completed || 0 }}/{{ patrolStatus.total || 0 }}</span>
+          <span>{{ Math.round((patrolStatus.progress || 0) * 100) }}%</span>
         </div>
         <div class="h-2 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
           <div
             class="h-full bg-primary-500 transition-all"
-            :style="{ width: `${patrolStatus.progress}%` }"
+            :style="{ width: `${Math.round((patrolStatus.progress || 0) * 100)}%` }"
           />
         </div>
         <p class="text-xs text-gray-500 dark:text-gray-400">
@@ -186,14 +234,18 @@
       <div class="flex gap-2">
         <button
           type="button"
-          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="!!mapPreset"
+          :title="mapPreset ? '内置预设不支持导出，先编辑一笔即可变成自定义地图' : '导出当前地图为 JSON'"
           @click="$emit('export-map')"
         >
           导出地图
         </button>
         <button
           type="button"
-          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+          class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="!!mapPreset"
+          :title="mapPreset ? '内置预设不支持导入，请先新建地图' : '导入 JSON 地图'"
           @click="triggerImport"
         >
           导入地图
@@ -208,7 +260,8 @@
         >
       </div>
       <p class="text-xs text-gray-500 dark:text-gray-400">
-        导出当前地图为 JSON 文件；导入时自动校验结构，成功后机器人复位
+        <template v-if="mapPreset">内置预设地图不支持导入导出，先"新建地图"或编辑一笔即可解锁</template>
+        <template v-else>导出当前地图为 JSON 文件；导入时自动校验结构，成功后机器人复位</template>
       </p>
     </div>
 
@@ -317,6 +370,14 @@ const props = defineProps({
     type: Boolean,
     default: true,
   },
+  showTrail: {
+    type: Boolean,
+    default: false,
+  },
+  pendingCount: {
+    type: Number,
+    default: 0,
+  },
 })
 
 const emit = defineEmits([
@@ -334,6 +395,10 @@ const emit = defineEmits([
   'set-edit-mode',
   'clear-goals',
   'remove-goal',
+  'toggle-trail',
+  'new-map',
+  'restart',
+  'clear-nearest',
   'toggle-goal-numbers',
   'carry-home',
 ])
@@ -388,7 +453,6 @@ async function onAvatarFileChange(event) {
 }
 
 const editModes = [
-  { key: 'pan', label: '平移' },
   { key: 'obstacle', label: '障碍' },
   { key: 'goal', label: '巡检点' },
   { key: 'start', label: '起点' },

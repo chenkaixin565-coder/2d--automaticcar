@@ -123,9 +123,14 @@ export class RemoteService extends RobotService {
       this._anomalies.unshift(frame.data)
       if (this._anomalies.length > 200) this._anomalies.pop()
       this._emitEvent('anomaly', frame.data)
+    } else if (frame.type === 'blocked') {
+      // 巡检遇阻：交给界面弹窗询问是否清障（V2.0）。
+      this._emitEvent('blocked', frame.data)
+    } else if (frame.type === 'empty') {
+      this._emitEvent('empty', frame.data)
     } else if (frame.type === 'notice') {
       const msg = frame.data && frame.data.message ? frame.data.message : ''
-      if (msg.includes('复位') || msg.includes('复位到起点')) {
+      if (msg.includes('复位') || msg.includes('重新开始')) {
         this._visitedTrail = [[this._state.x, this._state.y]]
         this._snapshots = []
       }
@@ -171,7 +176,7 @@ export class RemoteService extends RobotService {
       x: data.x, y: data.y, theta: data.theta,
       battery: data.battery, mode: data.mode,
       path: (data.path || []).map((p) => [...p]),
-      visitedTrail: this._visitedTrail.map((p) => [...p]),
+      trailLen: this._visitedTrail.length,
       sensors: { ...data.sensors },
     })
     if (this._snapshots.length > 5000) this._snapshots.shift()
@@ -279,12 +284,78 @@ export class RemoteService extends RobotService {
   /**
    * 复位机器人到起点。
    */
-  reset() {
-    if (!this._sendCommand('reset', {})) {
-      this._rest('POST', '/api/v1/robot/reset').catch((e) => console.error(e))
+  reset(keepTrail = false) {
+    if (!this._sendCommand('reset', { keep_trail: keepTrail })) {
+      this._rest('POST', `/api/v1/robot/reset?keep_trail=${keepTrail ? 'true' : 'false'}`).catch((e) =>
+        console.error(e)
+      )
     }
-    this._visitedTrail = [[this._state.x, this._state.y]]
+    if (!keepTrail) {
+      this._visitedTrail = [[this._state.x, this._state.y]]
+    }
     this._snapshots = []
+  }
+
+  /**
+   * 重新开始（V2.0）：复位机器人但保留尾迹。
+   */
+  restart() {
+    this.reset(true)
+  }
+
+  /**
+   * 新建空白地图（V2.0）。
+   * @param {number} width - 宽度。
+   * @param {number} height - 高度。
+   */
+  newMap(width, height) {
+    if (!this._sendCommand('new_map', { width, height })) {
+      this._rest('POST', '/api/v1/map/new', { width, height })
+        .then(() => this.fetchMap().then((map) => {
+          this._map = map
+          this._visitedTrail = [[map.start[0], map.start[1]]]
+          this._snapshots = []
+          this._emitState()
+        }))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 巡检遇阻决策（V2.0）。
+   * @param {'clear'|'skip'|'stop'} action - 决策动作。
+   */
+  patrolDecision(action) {
+    if (!this._sendCommand('patrol_decision', { action })) {
+      this._rest('POST', '/api/v1/patrol/decision', { action })
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 一键清除最近的待清障障碍（V2.0）。
+   */
+  clearNearestPending() {
+    if (!this._sendCommand('clear_nearest_pending', {})) {
+      this._rest('POST', '/api/v1/robot/clear-nearest-pending')
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 获取待清障记录（V2.0，REST 拉取）。
+   * @returns {Promise<number[][]>} 坐标数组。
+   */
+  async getPending() {
+    try {
+      const data = await this._rest('GET', '/api/v1/robot/pending')
+      return Array.isArray(data.pending) ? data.pending : []
+    } catch (error) {
+      console.warn('待清障记录拉取失败：', error)
+      return []
+    }
   }
 
   /**

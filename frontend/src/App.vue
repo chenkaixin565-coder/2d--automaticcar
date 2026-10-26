@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V1.2</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -17,10 +17,9 @@
       {{ bannerText }}
     </div>
 
-    <!-- 新告警 Toast：移动端为文档流内布局（夹在横幅与地图之间，绝不遮挡地图）；
-         桌面端悬浮右上角（仪表盘常规模式） -->
+    <!-- 告警 Toast（V2.0）：改为悬浮层，不占文档流，弹出时地图不会被顶下去 -->
     <div
-      class="shrink-0 px-2 pt-1.5 flex flex-col gap-1.5 pointer-events-none md:fixed md:top-14 md:right-3 md:z-50 md:px-0 md:pt-0"
+      class="fixed top-14 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 w-[calc(100%-1rem)] max-w-sm pointer-events-none"
     >
       <TransitionGroup name="toast">
         <div
@@ -55,7 +54,10 @@
           :route-plan="routePlan"
           :show-goal-numbers="showGoalNumbers"
           :patrol-blocked-cell="patrolBlockedCell"
+          :show-trail="showTrail"
+          :pending="pendingCells"
           @view-change="onViewChange"
+          @fit="fitMap"
           @edit-obstacle="onEditObstacle"
           @clear-obstacle="onClearObstacle"
           @set-goal="onSetGoal"
@@ -69,7 +71,10 @@
           v-if="hoverCell"
           class="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 px-2.5 py-1 rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300 shadow-sm pointer-events-none whitespace-nowrap"
         >
-          [{{ hoverCell.x }}, {{ hoverCell.y }}] · {{ hoverCellType }}
+          ({{ hoverCell.x }}, {{ hoverCell.y }}) ·
+          <span :class="hoverInfo.passable ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'">{{ hoverCellType }}</span>
+          <span v-if="!hoverInfo.passable" class="text-red-500"> · 不可通行</span>
+          <span v-if="hoverInfo.cost !== null" class="text-gray-500 dark:text-gray-400"> · 到达耗电 {{ hoverInfo.cost }}%</span>
         </div>
 
         <!-- 地图缩放按钮 -->
@@ -89,14 +94,6 @@
             @click="zoomOut"
           >
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /></svg>
-          </button>
-          <button
-            type="button"
-            class="map-tool-btn"
-            aria-label="适配屏幕"
-            @click="fitMap"
-          >
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V4h4M4 16v4h4M20 8V4h-4M20 16v4h-4" /></svg>
           </button>
         </div>
 
@@ -120,6 +117,12 @@
           :map-preset="mapPresetKey"
           :has-avatar="!!robotAvatar"
           :show-goal-numbers="showGoalNumbers"
+          :show-trail="showTrail"
+          :pending-count="pendingCells.length"
+          @toggle-trail="onToggleTrail"
+          @new-map="onOpenNewMap"
+          @restart="onRestart"
+          @clear-nearest="onClearNearest"
           @move="onMove"
           @reset="onReset"
           @resolve-fault="onResolveFault"
@@ -142,14 +145,21 @@
           :map-goals="map.goals"
           :patrol-status="patrolStatus"
           :robot="robot"
+          :pending-count="pendingCells.length"
           @plan-route="onPlanRoute"
+          @clear-nearest="onClearNearest"
           @execute-plan-clear="onExecutePlanClear"
           @cancel-plan="onCancelPlan"
           @start-patrol="onStartPatrol"
           @clear-blocked="onClearBlockedObstacle"
         />
         <Joystick class="hidden" @move="onMove" />
-        <StatusDashboard :robot="robot" :temperature-history="temperatureHistory" />
+        <StatusDashboard
+          :robot="robot"
+          :temperature-history="temperatureHistory"
+          :show-temperature="showTemperature"
+          @toggle-temperature="toggleTemperature"
+        />
         <PlaybackBar
           :snapshots="snapshots"
           :current-index="playbackIndex"
@@ -191,13 +201,20 @@
             :map-goals="map.goals"
             :patrol-status="patrolStatus"
             :robot="robot"
+            :pending-count="pendingCells.length"
             @plan-route="onPlanRoute"
+            @clear-nearest="onClearNearest"
             @execute-plan-clear="onExecutePlanClear"
             @cancel-plan="onCancelPlan"
             @start-patrol="onStartPatrol"
             @clear-blocked="onClearBlockedObstacle"
           />
-          <StatusDashboard :robot="robot" :temperature-history="temperatureHistory" />
+          <StatusDashboard
+            :robot="robot"
+            :temperature-history="temperatureHistory"
+            :show-temperature="showTemperature"
+            @toggle-temperature="toggleTemperature"
+          />
           <PlaybackBar
             :snapshots="snapshots"
             :current-index="playbackIndex"
@@ -211,7 +228,23 @@
       </div>
     </main>
 
-    <!-- 空电搬回确认弹窗（V1.2） -->
+    <!-- 巡检遇阻决策弹窗（V2.0）：停在障碍前一格后询问是否清除 -->
+    <ObstacleDialog
+      :visible="!!blockedCell"
+      :cell="blockedCell ? blockedCell.cell : null"
+      :battery="robot.battery"
+      :clear-cost="5"
+      @decide="onBlockedDecision"
+    />
+
+    <!-- 新建地图弹窗（V2.0） -->
+    <NewMapModal
+      :visible="showNewMapModal"
+      @confirm="onNewMapConfirm"
+      @dismiss="showNewMapModal = false"
+    />
+
+    <!-- 空电弹窗（V2.0）：优先自动返航，到不了才需要用户搬回 -->
     <EmptyBatteryModal
       :visible="showEmptyModal"
       @confirm="onCarryHomeConfirm"
@@ -246,11 +279,17 @@ import PlaybackBar from './components/PlaybackBar.vue'
 import MobileControls from './components/MobileControls.vue'
 import RoutePlanPanel from './components/RoutePlanPanel.vue'
 import EmptyBatteryModal from './components/EmptyBatteryModal.vue'
+import ObstacleDialog from './components/ObstacleDialog.vue'
+import NewMapModal from './components/NewMapModal.vue'
+import { astar } from './services/astar.js'
 
 const SETTINGS_KEY = 'irm_settings_v1'
 
 /** 目标点标号开关的持久化键名（V1.2：标号点地图 / 不标号点地图）。 */
 const GOAL_NUMBERS_KEY = 'irm_goal_numbers_v1'
+
+/** 尾迹显示开关的持久化键名（V2.0：默认隐藏）。 */
+const TRAIL_KEY = 'irm_show_trail_v1'
 
 // 数据源展示标签：后端连接成功显示"后端服务"，否则"离线仿真"
 const dataModeLabel = computed(() => (usingBackend.value ? '后端服务' : '离线仿真'))
@@ -302,11 +341,21 @@ const anomalies = ref(service.getAnomalies())
 const temperatureHistory = ref([])
 const snapshots = ref([])
 const hoverCell = ref(null)
+// 尾迹是否显示（V2.0：默认隐藏，可手动开启）
+const showTrail = ref(false)
+// 温度面板是否显示（V2.0：默认隐藏）
+const showTemperature = ref(false)
+// 新建地图弹窗
+const showNewMapModal = ref(false)
+// 巡检遇阻决策（V2.0）：{ cell: [x, y] } 或 null
+const blockedCell = ref(null)
+// 待清障记录（V2.0），来自 state 帧
+const pendingCells = ref([])
 
 // 地图视图
 const scale = ref(1)
 const offset = ref({ x: 0, y: 0 })
-const editMode = ref('pan')
+const editMode = ref('nav')
 const mapContainerRef = ref(null)
 
 // 主题
@@ -328,6 +377,29 @@ const hoverCellType = computed(() => {
   return '可通行'
 })
 
+/**
+ * 悬停格的附加信息（V2.0）：是否可通行、从机器人当前位置到达该格的理论耗电。
+ * 耗电按"每格 0.2%"估算；不可通行或不可达时为 null。
+ */
+const hoverInfo = computed(() => {
+  const cell = hoverCell.value
+  const empty = { passable: true, cost: null }
+  if (!cell) return empty
+  const { x, y } = cell
+  if (x < 0 || x >= map.width || y < 0 || y >= map.height) {
+    return { passable: false, cost: null }
+  }
+  const passable = map.grid[y][x] === 0
+  if (!passable) return { passable: false, cost: null }
+  const result = astar(map.grid, [map.start[0], map.start[1]], [x, y])
+  if (!result.path || result.path.length === 0) return { passable: true, cost: null }
+  const from = [robot.value.x, robot.value.y]
+  const route = astar(map.grid, from, [x, y])
+  const steps = route.path && route.path.length > 0 ? route.path.length - 1 : null
+  if (steps === null) return { passable: true, cost: null }
+  return { passable: true, cost: (steps * 0.2).toFixed(1) }
+})
+
 // 移动端抽屉
 const drawerOpen = ref(false)
 
@@ -340,7 +412,11 @@ const playbackPlaying = ref(false)
 let playbackTimer = null
 const playbackSnapshot = computed(() => {
   if (snapshots.value.length === 0) return null
-  return snapshots.value[playbackIndex.value] || snapshots.value[snapshots.value.length - 1]
+  const snap = snapshots.value[playbackIndex.value] || snapshots.value[snapshots.value.length - 1]
+  if (!snap) return null
+  // V2.0：快照只保存尾迹长度，渲染时再切片，避免每帧深拷贝整条轨迹。
+  if (snap.visitedTrail) return snap
+  return { ...snap, visitedTrail: visitedTrail.value.slice(0, snap.trailLen || 0) }
 })
 
 // Toast
@@ -361,6 +437,7 @@ let unsubscribeEvent = null
 onMounted(() => {
   loadTheme()
   loadGoalNumbers()
+  loadTrailSetting()
   fitMap()
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('resize', handleResize)
@@ -368,13 +445,18 @@ onMounted(() => {
 
   unsubscribeState = service.onState((frame) => {
     robot.value = frame.data
-    // 路线规划（V1.2）：无规划时帧内为 null
+    // 路线规划（预览）：无规划时帧内为 null
     routePlan.value = frame.data.plan || null
     visitedTrail.value = service.getVisitedTrail()
-    patrolStatus.value = service.getPatrolStatus()
-    temperatureHistory.value.push(frame.data.sensors.temperature)
-    if (temperatureHistory.value.length > 300) {
-      temperatureHistory.value.shift()
+    // 远程模式下 patrol 由 state 帧携带；本地模式直接读服务
+    patrolStatus.value = frame.data.patrol || service.getPatrolStatus()
+    pendingCells.value = frame.data.pending || []
+    blockedCell.value = frame.data.blocked ? { cell: frame.data.blocked.cell } : null
+    if (showTemperature.value) {
+      temperatureHistory.value.push(frame.data.sensors.temperature)
+      if (temperatureHistory.value.length > 300) {
+        temperatureHistory.value.shift()
+      }
     }
   })
 
@@ -382,6 +464,12 @@ onMounted(() => {
     if (frame.type === 'anomaly') {
       anomalies.value = service.getAnomalies()
       addToast(frame.data.type, frame.data.message)
+    } else if (frame.type === 'blocked') {
+      // 巡检遇阻：弹出三选一对话框（清除 / 跳过记录 / 停止）
+      blockedCell.value = { cell: frame.data.cell }
+      addToast('stuck', frame.data.message)
+    } else if (frame.type === 'empty') {
+      showEmptyModal.value = true
     } else if (frame.type === 'notice') {
       const msg = frame.data && frame.data.message ? frame.data.message : ''
       if (usingBackend.value) {
@@ -561,7 +649,7 @@ function onMove(payload) {
 }
 
 function onReset() {
-  service.reset()
+  service.reset(false)
   snapshots.value = []
   stopPlayback()
 }
@@ -651,6 +739,77 @@ function onCarryHomePrompt() {
 function onCarryHomeConfirm() {
   showEmptyModal.value = false
   service.carryBackHome()
+}
+
+/**
+ * 巡检遇阻决策（V2.0）：clear = 清除并继续；skip = 跳过并记入待清障；stop = 停止巡检。
+ *
+ * @param {'clear'|'skip'|'stop'} action - 决策动作。
+ */
+function onBlockedDecision(action) {
+  blockedCell.value = null
+  service.patrolDecision(action)
+}
+
+/** 一键清除待清障记录里离机器人最近的一处。 */
+function onClearNearest() {
+  service.clearNearestPending()
+}
+
+/** 重新开始：复位机器人但保留尾迹（V2.0）。 */
+function onRestart() {
+  service.restart()
+  snapshots.value = []
+  stopPlayback()
+}
+
+/** 打开"新建地图"弹窗。 */
+function onOpenNewMap() {
+  showNewMapModal.value = true
+}
+
+/**
+ * 确认新建地图：清空当前地图，只保留边界墙。
+ *
+ * @param {{width: number, height: number}} size - 新地图尺寸。
+ */
+function onNewMapConfirm({ width, height }) {
+  showNewMapModal.value = false
+  service.newMap(width, height)
+  Object.assign(map, service.getMap())
+  mapPresetKey.value = null
+  snapshots.value = []
+  stopPlayback()
+  blockedCell.value = null
+  pendingCells.value = []
+  fitMap()
+}
+
+/** 尾迹显示开关（V2.0：默认隐藏）。 */
+function onToggleTrail() {
+  showTrail.value = !showTrail.value
+  try {
+    localStorage.setItem(TRAIL_KEY, showTrail.value ? '1' : '0')
+  } catch (error) {
+    console.warn('尾迹设置保存失败：', error)
+  }
+}
+
+/** 读取尾迹开关设置。 */
+function loadTrailSetting() {
+  try {
+    showTrail.value = localStorage.getItem(TRAIL_KEY) === '1'
+  } catch {
+    showTrail.value = false
+  }
+}
+
+/** 温度面板显示开关（V2.0：默认隐藏）。 */
+function toggleTemperature() {
+  showTemperature.value = !showTemperature.value
+  if (showTemperature.value) {
+    temperatureHistory.value = []
+  }
 }
 
 // --------------------------------------------------------------------------

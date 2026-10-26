@@ -102,13 +102,6 @@
           <button
             type="button"
             class="flex-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300"
-            @click="$emit('fit-map')"
-          >
-            适配地图
-          </button>
-          <button
-            type="button"
-            class="flex-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300"
             @click="$emit('toggle-detail')"
           >
             {{ detailOpen ? '收起详情' : '更多详情' }}
@@ -130,7 +123,7 @@
 defineProps({
   robot: { type: Object, required: true },
   patrolStatus: { type: Object, required: true },
-  editMode: { type: String, default: 'pan' },
+  editMode: { type: String, default: 'nav' },
   detailOpen: { type: Boolean, default: false },
 })
 
@@ -147,7 +140,6 @@ const emit = defineEmits([
 ])
 
 const editModes = [
-  { key: 'pan', label: '平移' },
   { key: 'obstacle', label: '障碍' },
   { key: 'goal', label: '巡检点' },
   { key: 'start', label: '起点' },

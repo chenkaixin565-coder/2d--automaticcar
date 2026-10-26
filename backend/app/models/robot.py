@@ -58,3 +58,21 @@ class ClearObstacleCommand(BaseModel):
     """手动清障指令：指定要清除的障碍格。"""
 
     cell: list[int] = Field(..., description="障碍坐标 [x, y]")
+
+
+class PatrolDecisionCommand(BaseModel):
+    """巡检遇阻决策指令（V2.0）。
+
+    巡检停在障碍前一格后，由前端弹窗询问用户，三种决策：
+    clear = 清除该障碍并继续巡检；skip = 跳过当前巡检点并记入待清障记录；
+    stop = 停止本次巡检。
+    """
+
+    action: str = Field(..., description="决策动作 clear|skip|stop")
+
+
+class NewMapCommand(BaseModel):
+    """新建空白地图指令（V2.0）。"""
+
+    width: int = Field(30, ge=10, le=60, description="地图宽度（列数）")
+    height: int = Field(20, ge=10, le=60, description="地图高度（行数）")

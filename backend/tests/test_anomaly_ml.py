@@ -87,12 +87,25 @@ def test_rule_overheat():
 
 
 def test_rule_sensor_fault():
+    """同一通道跨帧突变应触发告警（V2.0 语义）。"""
     det = RuleAnomalyDetector()
-    reading = _normal_reading(random.Random(1), 80.0)
-    reading["front"] = 0.2
-    reading["left"] = 3.8  # 相邻读数差 > 3m 触发突变。
-    events = det.update(reading)
+    rng = random.Random(1)
+    base = _normal_reading(rng, 80.0)
+    det.update(base)  # 第一帧只建立基线，不产生告警。
+    jump = dict(base)
+    jump["front"] = round(base["front"] + 4.0, 2)  # 正前方这一通道发生跳变。
+    events = det.update(jump)
     assert any(e["type"] == ANOMALY_SENSOR_FAULT for e in events)
+
+
+def test_rule_sensor_fault_ignores_cross_channel_gap():
+    """三个方向在同一帧读数差异大（贴着墙）不应误报为传感器故障。"""
+    det = RuleAnomalyDetector()
+    reading = _normal_reading(random.Random(2), 90.0)
+    reading.update({"front": 5.0, "left": 0.5, "right": 4.5})
+    det.update(reading)
+    events = det.update(dict(reading))  # 第二帧与第一帧一致，不应告警。
+    assert not any(e["type"] == ANOMALY_SENSOR_FAULT for e in events)
 
 
 def test_factory_switches_strategy():

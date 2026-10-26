@@ -6,13 +6,21 @@
       @mousedown="handleMouseDown"
       @mousemove="handleMouseMove"
       @mouseup="handleMouseUp"
-      @mouseleave="handleMouseUp(); handleHoverLeave()"
+      @mouseleave="cancelInteraction(); handleHoverLeave()"
       @wheel.prevent="handleWheel"
+      @contextmenu.prevent
       @touchstart="handleTouchStart"
       @touchmove="handleTouchMove"
       @touchend="handleTouchEnd"
     />
-    <div class="absolute top-3 left-3 px-2 py-1 text-xs rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300">
+    <button
+      class="absolute top-3 left-3 px-2.5 py-1 text-xs font-medium rounded-md bg-white/95 dark:bg-gray-800/95 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 shadow-sm"
+      title="缩放到适合窗口（V2.0：固定在地图左上角）"
+      @click="emit('fit')"
+    >
+      ⤢ 适配地图
+    </button>
+    <div class="absolute top-12 left-3 px-2 py-1 text-xs rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300">
       {{ editModeLabel }}
     </div>
     <div class="absolute bottom-3 right-3 px-2 py-1 text-xs rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400">
@@ -90,6 +98,16 @@ const props = defineProps({
     type: Array,
     default: null,
   },
+  // 是否显示走过的尾迹（V2.0：默认隐藏，可手动开启）
+  showTrail: {
+    type: Boolean,
+    default: false,
+  },
+  // 待清障记录 [[x, y], ...]（V2.0）
+  pending: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits([
@@ -100,12 +118,12 @@ const emit = defineEmits([
   'set-start',
   'set-charge',
   'hover',
+  'fit',
 ])
 
 const canvasRef = ref(null)
 const isPanning = ref(false)
 const isPainting = ref(false)
-const paintValue = ref(0)
 const lastPaintCell = ref(null)
 // 边界格涂抹被拒时的红色闪烁反馈 { x, y, until }
 const rejectCell = ref(null)
@@ -118,14 +136,14 @@ const pinchStartOffset = ref({ x: 0, y: 0 })
 
 const editModeLabel = computed(() => {
   const labels = {
-    pan: '平移模式（滚轮缩放 / 拖拽平移）',
-    obstacle: '障碍编辑（左键拖动绘制 / 擦除）',
-    goal: '设置巡检点（点击地图添加 / 移除）',
-    start: '设置起点（点击地图）',
-    charge: '设置充电点（点击地图）',
-    clear: '清障模式（点击障碍清除，每处消耗 5% 电量）',
+    obstacle: '障碍编辑：按住左键拖动绘制（右键拖动平移）',
+    goal: '设置巡检点：点击地图添加 / 移除',
+    start: '设置起点：点击地图',
+    charge: '设置充电点：点击地图',
+    clear: '清障模式：点击障碍清除（每处 5% 电量）',
+    nav: '浏览：拖拽平移、滚轮缩放',
   }
-  return labels[props.editMode] || labels.pan
+  return labels[props.editMode] || labels.nav
 })
 
 onMounted(() => {
@@ -362,6 +380,30 @@ function drawPlanMarks(ctx) {
 }
 
 /**
+ * 绘制待清障记录：橙色小圆环 + 叉号，表示"巡检时被跳过、还没清掉的障碍"。
+ */
+function drawPendingMarks(ctx) {
+  const cells = props.pending || []
+  if (!cells.length) return
+  const inset = CELL_PIXELS * 0.28
+  ctx.save()
+  ctx.strokeStyle = '#f59e0b'
+  ctx.lineWidth = 2 / props.scale
+  cells.forEach((cell) => {
+    const x = cell[0] * CELL_PIXELS
+    const y = cell[1] * CELL_PIXELS
+    ctx.strokeRect(x + inset, y + inset, CELL_PIXELS - inset * 2, CELL_PIXELS - inset * 2)
+    ctx.beginPath()
+    ctx.moveTo(x + inset, y + inset)
+    ctx.lineTo(x + CELL_PIXELS - inset, y + CELL_PIXELS - inset)
+    ctx.moveTo(x + CELL_PIXELS - inset, y + inset)
+    ctx.lineTo(x + inset, y + CELL_PIXELS - inset)
+    ctx.stroke()
+  })
+  ctx.restore()
+}
+
+/**
  * 绘制巡检受阻标记：橙色呼吸描边 + 中心感叹号，提示可一键清障。
  */
 function drawPatrolBlocked(ctx) {
@@ -454,18 +496,23 @@ function render() {
 
   const snapshot = props.playbackSnapshot
   if (snapshot) {
-    drawTrail(ctx, snapshot.visitedTrail || [])
+    // 回放时按快照里的尾迹长度切片，避免每帧深拷贝整条轨迹
+    drawTrail(ctx, (props.visitedTrail || []).slice(0, snapshot.trailLen || 0))
     drawPath(ctx, snapshot.path || [])
     drawRobot(ctx, { x: animPos.x, y: animPos.y, theta: animPos.theta }, true)
   } else {
-    drawTrail(ctx, props.visitedTrail)
+    // V2.0：尾迹默认隐藏，由"显示尾迹"开关控制
+    if (props.showTrail) {
+      drawTrail(ctx, props.visitedTrail)
+    }
     drawPlannedRoute(ctx)
     drawPath(ctx, props.robot.path || [])
     drawRobot(ctx, { x: animPos.x, y: animPos.y, theta: animPos.theta }, false)
   }
 
-  // 规划清障标记与巡检受阻标记绘制在机器人之上，保证障碍格上可见
+  // 规划清障标记、待清障记录与巡检受阻标记绘制在机器人之上，保证障碍格上可见
   drawPlanMarks(ctx)
+  drawPendingMarks(ctx)
   drawPatrolBlocked(ctx)
   updateWalkedPrefix()
   drawHover(ctx)
@@ -504,8 +551,11 @@ function drawSpecialCells(ctx) {
   drawMarker(ctx, chargePoint, '#f97316', 'C')
   if (goals) {
     goals.forEach((goal, index) => {
-      // 关闭编号时仍绘制圆点标记位置，仅不显示数字
-      drawMarker(ctx, goal, '#3b82f6', props.showGoalNumbers ? String(index + 1) : '')
+      // 圆点只表示位置；编号改成圆点右侧的横排小徽标，避免盖住图标本身
+      drawMarker(ctx, goal, '#3b82f6', '')
+      if (props.showGoalNumbers) {
+        drawGoalBadge(ctx, goal, String(index + 1))
+      }
     })
   }
 }
@@ -530,6 +580,46 @@ function drawMarker(ctx, pos, color, label) {
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(label, cx, cy)
+}
+
+/**
+ * 绘制巡检点编号徽标：贴在圆点右上方的横排小标签。
+ *
+ * @param {Object} ctx - Canvas 上下文。
+ * @param {number[]} pos - 栅格坐标 [x, y]。
+ * @param {string} label - 编号文本。
+ */
+function drawGoalBadge(ctx, pos, label) {
+  const cx = (pos[0] + 0.5) * CELL_PIXELS
+  const cy = (pos[1] + 0.5) * CELL_PIXELS
+  // 低缩放时按屏幕像素兜底，避免编号缩成看不清的小点
+  const fs = Math.max(CELL_PIXELS * 0.3, 9 / props.scale)
+  ctx.font = `600 ${fs}px ui-sans-serif, system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const w = Math.max(fs * 1.5, ctx.measureText(label).width + fs * 0.6)
+  const h = fs * 1.5
+  const bx = cx + CELL_PIXELS * 0.18
+  const by = cy - CELL_PIXELS * 0.62
+
+  ctx.save()
+  ctx.fillStyle = props.isDark ? '#1d4ed8' : '#2563eb'
+  ctx.strokeStyle = props.isDark ? '#0b1220' : '#ffffff'
+  ctx.lineWidth = 1.5 / props.scale
+  const r = 3 / props.scale
+  ctx.beginPath()
+  ctx.moveTo(bx + r, by)
+  ctx.arcTo(bx + w, by, bx + w, by + h, r)
+  ctx.arcTo(bx + w, by + h, bx, by + h, r)
+  ctx.arcTo(bx, by + h, bx, by, r)
+  ctx.arcTo(bx, by, bx + w, by, r)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = '#ffffff'
+  ctx.font = `600 ${fs}px ui-sans-serif, system-ui, sans-serif`
+  ctx.fillText(label, bx + w / 2, by + h / 2 + 0.5)
+  ctx.restore()
 }
 
 /**
@@ -602,8 +692,11 @@ function flashRejectCell(x, y) {
  */
 function drawTrail(ctx, trail) {
   if (!trail || trail.length < 2) return
-  ctx.strokeStyle = props.isDark ? '#6b7280' : '#9ca3af'
-  ctx.lineWidth = 2 / props.scale
+  ctx.save()
+  // V2.0：尾迹统一用细虚线，与"闪烁虚线的规划路线"区分开。
+  ctx.strokeStyle = props.isDark ? 'rgba(148, 163, 184, 0.75)' : 'rgba(100, 116, 139, 0.6)'
+  ctx.lineWidth = 1.6 / props.scale
+  ctx.setLineDash([5 / props.scale, 5 / props.scale])
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   ctx.beginPath()
@@ -617,6 +710,7 @@ function drawTrail(ctx, trail) {
     }
   })
   ctx.stroke()
+  ctx.restore()
 }
 
 /**
@@ -650,31 +744,90 @@ function drawPath(ctx, path) {
 function drawRobot(ctx, state, isGhost) {
   const cx = (state.x + 0.5) * CELL_PIXELS
   const cy = (state.y + 0.5) * CELL_PIXELS
-  const radius = CELL_PIXELS * 0.35
+  // 缩得很小时按屏幕像素兜底，保证仍能辨认出机器人
+  const size = Math.max(CELL_PIXELS * 0.8, 16 / props.scale)
   const theta = state.theta || 0
+  const alpha = isGhost ? 0.45 : 1
 
   ctx.save()
   ctx.translate(cx, cy)
+  ctx.rotate(theta)
 
-  // 机身：优先使用自定义形象（回放幽灵态不绘制形象，保持半透明蓝点）
   if (!isGhost && avatarImage.value) {
-    const size = radius * 2
-    ctx.drawImage(avatarImage.value, -radius, -radius, size, size)
-  } else {
-    ctx.fillStyle = isGhost ? 'rgba(59, 130, 246, 0.4)' : '#2563eb'
+    const r = size / 2
+    ctx.rotate(-theta)
+    ctx.drawImage(avatarImage.value, -r, -r, size, size)
+    ctx.restore()
+    return
+  }
+
+  const body = size * 0.62
+  ctx.globalAlpha = alpha
+
+  // 阴影，让机器人从栅格里"浮"起来
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.18)'
+  ctx.beginPath()
+  ctx.ellipse(body * 0.08, body * 0.12, body * 0.62, body * 0.55, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  // 左右履带轮：深灰圆角块，明显区分于机身
+  ctx.fillStyle = props.isDark ? '#111827' : '#334155'
+  const wheelW = body * 0.3
+  const wheelH = body * 0.78
+  for (const sign of [-1, 1]) {
     ctx.beginPath()
-    ctx.arc(0, 0, radius, 0, Math.PI * 2)
+    ctx.roundRect(
+      sign * (body / 2 + wheelW * 0.18) - wheelW / 2,
+      -wheelH / 2,
+      wheelW,
+      wheelH,
+      wheelW * 0.45
+    )
     ctx.fill()
   }
 
-  // 朝向箭头
-  ctx.strokeStyle = '#ffffff'
-  ctx.lineWidth = 3 / props.scale
+  // 机身：蓝色圆角矩形 + 白色描边
+  const gradient = ctx.createLinearGradient(-body / 2, -body / 2, body / 2, body / 2)
+  gradient.addColorStop(0, isGhost ? '#93c5fd' : '#60a5fa')
+  gradient.addColorStop(1, isGhost ? '#60a5fa' : '#1d4ed8')
+  ctx.fillStyle = gradient
+  ctx.strokeStyle = props.isDark ? '#e2e8f0' : '#ffffff'
+  ctx.lineWidth = Math.max(1.5, 2 / props.scale)
   ctx.beginPath()
-  ctx.moveTo(0, 0)
-  ctx.lineTo(Math.cos(theta) * radius, Math.sin(theta) * radius)
+  ctx.roundRect(-body / 2, -body / 2, body, body, body * 0.26)
+  ctx.fill()
   ctx.stroke()
 
+  // 顶部传感器穹顶
+  ctx.fillStyle = isGhost ? '#dbeafe' : '#e0f2fe'
+  ctx.beginPath()
+  ctx.arc(body * 0.12, 0, body * 0.19, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.strokeStyle = '#0ea5e9'
+  ctx.lineWidth = Math.max(1, 1.5 / props.scale)
+  ctx.stroke()
+
+  // 前向箭头：贴在机身前方的三角，明确朝向
+  ctx.fillStyle = '#ef4444'
+  ctx.beginPath()
+  ctx.moveTo(body * 0.92, 0)
+  ctx.lineTo(body * 0.52, -body * 0.2)
+  ctx.lineTo(body * 0.52, body * 0.2)
+  ctx.closePath()
+  ctx.fill()
+
+  // 状态灯：低电量/阻塞时变红，否则绿色
+  const lampColor = isGhost
+    ? '#93c5fd'
+    : state.mode === 'blocked' || (state.battery !== undefined && state.battery < 20)
+      ? '#ef4444'
+      : '#22c55e'
+  ctx.fillStyle = lampColor
+  ctx.beginPath()
+  ctx.arc(-body * 0.24, -body * 0.24, Math.max(2, body * 0.1), 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.globalAlpha = 1
   ctx.restore()
 }
 
@@ -745,51 +898,52 @@ function screenToCell(screenX, screenY) {
   return [Math.floor(worldX / CELL_PIXELS), Math.floor(worldY / CELL_PIXELS)]
 }
 
+/**
+ * 交互状态：按下位置与是否发生拖拽。
+ * V2.0 起不再需要"平移模式"——任何模式下拖拽都能移动地图，
+ * 编辑动作改为"按下不移动、松开才算点击"，避免误拖改图。
+ */
+const downPos = ref(null)
+const downCell = ref(null)
+const movedSinceDown = ref(false)
+
 function handleMouseDown(event) {
-  if (event.button !== 0) return
   const pos = getEventPos(event)
-  if (props.editMode === 'pan') {
+  const cell = screenToCell(pos.x, pos.y)
+  downPos.value = pos
+  downCell.value = cell
+  movedSinceDown.value = false
+
+  // 右键 / 中键：任何模式下都能拖动地图。
+  if (event.button === 1 || event.button === 2) {
     isPanning.value = true
     panStart.value = pos
     viewOffsetStart.value = { ...props.offset }
-  } else if (props.editMode === 'obstacle') {
-    const cell = screenToCell(pos.x, pos.y)
-    if (inBounds(cell)) {
-      isPainting.value = true
-      paintValue.value = props.map.grid[cell[1]][cell[0]] === 1 ? 0 : 1
-      lastPaintCell.value = `${cell[0]},${cell[1]}`
-      // 真正的边界：最外环不可绘制/擦除，闪现红色拒绝反馈
-      if (isBoundaryCell(cell[0], cell[1], props.map.width, props.map.height)) {
-        flashRejectCell(cell[0], cell[1])
-        return
-      }
-      emit('edit-obstacle', { x: cell[0], y: cell[1], value: paintValue.value })
-    }
-  } else if (props.editMode === 'goal') {
-    const cell = screenToCell(pos.x, pos.y)
-    if (inBounds(cell)) {
-      emit('set-goal', { x: cell[0], y: cell[1] })
-    }
-  } else if (props.editMode === 'clear') {
-    // 清障模式：仅对障碍格生效，点击后由服务层执行清除（边界墙会被拒绝并提示）
-    const cell = screenToCell(pos.x, pos.y)
-    if (inBounds(cell) && props.map.grid[cell[1]][cell[0]] === 1) {
-      emit('clear-obstacle', { x: cell[0], y: cell[1] })
-    }
-  } else if (props.editMode === 'start') {
-    const cell = screenToCell(pos.x, pos.y)
-    if (inBounds(cell) && props.map.grid[cell[1]][cell[0]] === 0) {
-      emit('set-start', { x: cell[0], y: cell[1] })
-    }
-  } else if (props.editMode === 'charge') {
-    const cell = screenToCell(pos.x, pos.y)
-    if (inBounds(cell) && props.map.grid[cell[1]][cell[0]] === 0) {
-      emit('set-charge', { x: cell[0], y: cell[1] })
-    }
+    return
   }
+  if (event.button !== 0) return
+
+  if (props.editMode === 'obstacle') {
+    // 障碍模式：左键拖动只"画"不"擦"（擦除请用清障模式，消耗电量）。
+    if (!inBounds(cell)) return
+    isPainting.value = true
+    lastPaintCell.value = `${cell[0]},${cell[1]}`
+    if (isBoundaryCell(cell[0], cell[1], props.map.width, props.map.height)) {
+      flashRejectCell(cell[0], cell[1])
+      return
+    }
+    emit('edit-obstacle', { x: cell[0], y: cell[1], value: 1 })
+    return
+  }
+
+  // 其它模式：先按"可能拖拽"处理，松开时若没移动才执行点击动作。
+  isPanning.value = true
+  panStart.value = pos
+  viewOffsetStart.value = { ...props.offset }
 }
 
 function handleMouseMove(event) {
+  if (pinchStart.value) return
   const pos = getEventPos(event)
   const cell = screenToCell(pos.x, pos.y)
   if (inBounds(cell)) {
@@ -800,40 +954,77 @@ function handleMouseMove(event) {
     emit('hover', null)
   }
 
-  if (isPanning.value) {
-    const dx = pos.x - panStart.value.x
-    const dy = pos.y - panStart.value.y
-    emit('view-change', {
-      scale: props.scale,
-      offset: {
-        x: viewOffsetStart.value.x + dx,
-        y: viewOffsetStart.value.y + dy,
-      },
-    })
-  } else if (isPainting.value && props.editMode === 'obstacle') {
+  if (isPainting.value && props.editMode === 'obstacle') {
     const key = `${cell[0]},${cell[1]}`
     if (inBounds(cell) && key !== lastPaintCell.value) {
       lastPaintCell.value = key
-      // 真正的边界：最外环不可绘制/擦除，闪现红色拒绝反馈
       if (isBoundaryCell(cell[0], cell[1], props.map.width, props.map.height)) {
         flashRejectCell(cell[0], cell[1])
         return
       }
-      emit('edit-obstacle', { x: cell[0], y: cell[1], value: paintValue.value })
+      emit('edit-obstacle', { x: cell[0], y: cell[1], value: 1 })
+    }
+    return
+  }
+
+  if (isPanning.value && downPos.value) {
+    const dx = pos.x - panStart.value.x
+    const dy = pos.y - panStart.value.y
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+      movedSinceDown.value = true
+    }
+    if (movedSinceDown.value) {
+      emit('view-change', {
+        scale: props.scale,
+        offset: { x: viewOffsetStart.value.x + dx, y: viewOffsetStart.value.y + dy },
+      })
     }
   }
 }
 
 function handleMouseUp() {
+  // 只有"按下后没拖动"才算一次点击编辑。
+  if (
+    !isPainting.value &&
+    !movedSinceDown.value &&
+    downCell.value &&
+    inBounds(downCell.value)
+  ) {
+    applyClick(downCell.value)
+  }
+  resetInteraction()
+}
+
+/** 鼠标/手指移出画布：取消本次交互，不触发编辑。 */
+function cancelInteraction() {
+  resetInteraction()
+}
+
+function resetInteraction() {
   isPanning.value = false
   isPainting.value = false
   lastPaintCell.value = null
+  downPos.value = null
+  downCell.value = null
+  movedSinceDown.value = false
 }
 
-/** 鼠标移出画布：清除悬停高亮并通知外层隐藏详情徽标。 */
-function handleHoverLeave() {
-  hoverCell.value = null
-  emit('hover', null)
+/**
+ * 按当前编辑模式执行一次点击动作。
+ *
+ * @param {number[]} cell - 栅格坐标 [x, y]。
+ */
+function applyClick(cell) {
+  const [x, y] = cell
+  if (props.editMode === 'goal') {
+    emit('set-goal', { x, y })
+  } else if (props.editMode === 'clear') {
+    if (props.map.grid[y][x] === 1) emit('clear-obstacle', { x, y })
+  } else if (props.editMode === 'start') {
+    if (props.map.grid[y][x] === 0) emit('set-start', { x, y })
+  } else if (props.editMode === 'charge') {
+    if (props.map.grid[y][x] === 0) emit('set-charge', { x, y })
+  }
 }
 
 function handleWheel(event) {

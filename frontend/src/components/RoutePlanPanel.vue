@@ -38,7 +38,7 @@
         @click="emitPlanRoute"
       >
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4.5 8-11a8 8 0 1 0-16 0c0 6.5 8 11 8 11z" /><circle cx="12" cy="11" r="3" /></svg>
-        一键规划路线
+        预览规划路线
       </button>
       <p class="text-xs text-gray-500 dark:text-gray-400">
         按理论最短路径规划（可穿越普通障碍），自动计算移动与清障耗电，决定可清障个数
@@ -103,13 +103,13 @@
         开始巡检
       </button>
 
-      <!-- 巡检受阻：不清障告警，仅提示可一键清除 -->
+      <!-- 巡检受阻：停在障碍前一格，等待用户决策（V2.0） -->
       <div
         v-if="patrolStatus.blocked_by"
         class="rounded-lg border border-orange-200 dark:border-orange-900/50 bg-orange-50 dark:bg-orange-900/20 p-2.5 space-y-1.5"
       >
         <p class="text-xs text-orange-700 dark:text-orange-300">
-          巡检受阻：前方 [{{ patrolStatus.blocked_by[0] }}, {{ patrolStatus.blocked_by[1] }}] 有障碍，清除后继续巡检（不中断任务）
+          已停在障碍前一格：前方 [{{ patrolStatus.blocked_by[0] }}, {{ patrolStatus.blocked_by[1] }}]，可清除后继续，或跳过并记入待清障。
         </p>
         <button
           type="button"
@@ -117,7 +117,25 @@
           :disabled="robot.mode === 'empty'"
           @click="$emit('clear-blocked')"
         >
-          清除该障碍
+          清除该障碍并继续
+        </button>
+      </div>
+
+      <!-- 待清障记录：巡检时被跳过、还没清掉的障碍（V2.0） -->
+      <div
+        v-if="pendingCount > 0"
+        class="rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 p-2.5 space-y-1.5"
+      >
+        <p class="text-xs text-amber-700 dark:text-amber-300">
+          有 {{ pendingCount }} 处障碍在巡检时被跳过（地图上橙色叉号标记），可按距离由近到远逐一清除。
+        </p>
+        <button
+          type="button"
+          class="w-full px-2.5 py-1.5 text-xs font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+          :disabled="robot.mode === 'empty'"
+          @click="$emit('clear-nearest')"
+        >
+          一键清最近（-5% 电量）
         </button>
       </div>
     </div>
@@ -155,9 +173,21 @@ const props = defineProps({
     type: Object,
     default: () => ({ mode: 'manual', battery: 100 }),
   },
+  // 待清障记录数量（V2.0）
+  pendingCount: {
+    type: Number,
+    default: 0,
+  },
 })
 
-const emit = defineEmits(['plan-route', 'execute-plan-clear', 'cancel-plan', 'start-patrol', 'clear-blocked'])
+const emit = defineEmits([
+  'plan-route',
+  'execute-plan-clear',
+  'cancel-plan',
+  'start-patrol',
+  'clear-blocked',
+  'clear-nearest',
+])
 
 // 默认选中第一个巡检点作为规划目标
 const selectedGoalIndex = ref(0)

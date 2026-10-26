@@ -55,14 +55,14 @@ def test_move_into_obstacle_sets_blocked():
 
 
 def test_battery_consumption():
-    """移动每格消耗 0.2%，静止每 tick 消耗 0.02%。"""
+    """移动每格消耗 0.2%，待机默认不自放电（V2.0 调整）。"""
     engine = make_engine()
     battery_before = engine.battery
     engine.move(1, 0)
     assert engine.battery == battery_before - 0.2
     battery_after_move = engine.battery
     engine.tick()
-    assert abs(engine.battery - (battery_after_move - 0.02)) < 1e-6
+    assert engine.battery == battery_after_move  # 默认 battery_idle_cost = 0
 
 
 def test_patrol_reaches_goal():
@@ -151,8 +151,8 @@ def test_resolve_fault_keeps_boundary_wall():
     assert "边界" in frame["data"]["message"]
 
 
-def test_remove_obstacle_refuses_boundary():
-    """remove_obstacle 应拒绝拆除边界墙。"""
+def test_clear_obstacle_refuses_boundary():
+    """手动清障应拒绝拆除边界墙（V2.0 取代已删除的 remove_obstacle）。"""
     engine = make_engine()
-    engine.remove_obstacle([0, 2])
+    engine.clear_obstacle_at([0, 2])
     assert engine.map.grid[2][0] == 1

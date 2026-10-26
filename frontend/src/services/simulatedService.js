@@ -1,12 +1,21 @@
 /**
  * 模块功能：本地仿真器服务实现
- * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
- * 日期：2026-10-25
- * 版本：V1.2
+ * 作者：智能巡检机器人二维仿真系统 V2.0 前端开发组
+ * 日期：2026-10-26
+ * 版本：V2.0
  *
- * 本模块在前端完全模拟后端行为：200ms 推进一次仿真 tick，生成传感器数据、
+ * 本模块在浏览器内完全模拟后端行为：200ms 推进一次仿真 tick，生成传感器数据、
  * 检测异常、执行巡检任务，并通过 onState/onEvent 推送与后端 WebSocket 协议
- * 逐字段一致的数据帧。下一阶段替换为 RemoteService 时，界面组件无需修改。
+ * 逐字段一致的数据帧。
+ *
+ * V2.0 与后端 simulation_engine 对齐的关键规则：
+ *   1. 移动耗电 0.2%/格，只在 tick 里结算一次（修复原先 0.4%/格的翻倍 bug）；
+ *   2. 只有在充电点静止时才回血，离开即取消充电；
+ *   3. 清障前校验电量，批量清障逐处判断，不会出现"1% 电量拆一排墙"；
+ *   4. 巡检遇阻：停在障碍前一格并抛出 blocked 事件，由用户决定清除/跳过/停止；
+ *   5. 跳过时把障碍写入待清障记录，支持"一键清最近"；
+ *   6. 低电量自动返航，充满后自动继续原巡检任务；
+ *   7. 巡检进度统一为 0~1（修复接后端时进度条永远 0% 的问题）。
  */
 
 import { RobotService } from './robotService.js'
@@ -14,6 +23,7 @@ import { astar } from './astar.js'
 import { buildPlan } from './routePlanner.js'
 import { MAP_PRESETS, getPreset } from './mapPresets.js'
 import { enforceBorder, isBoundaryCell } from '../utils/mapBoundary.js'
+import { validateMap } from '../utils/mapIO.js'
 
 /** 仿真 tick 间隔，单位毫秒，与后端 WebSocket 推送频率一致。 */
 const TICK_MS = 200
@@ -30,8 +40,8 @@ const SENSOR_MAX_CELLS = Math.floor(SENSOR_RANGE_METERS / CELL_METERS)
 /** 每移动一格消耗的电量百分比。 */
 const BATTERY_MOVE_COST = 0.2
 
-/** 每个 tick 静止消耗的电量百分比。 */
-const BATTERY_IDLE_COST = 0.02
+/** 待机每 tick 的耗电量（V2.0 默认 0，避免演示时静默掉电）。 */
+const BATTERY_IDLE_COST = 0.0
 
 /** 充电点每个 tick 补充的电量百分比。 */
 const CHARGE_RATE = 1.0
@@ -39,23 +49,45 @@ const CHARGE_RATE = 1.0
 /** 低电量告警阈值。 */
 const LOW_BATTERY_THRESHOLD = 20.0
 
-/** 每清除一处障碍消耗的电量百分比（与后端 CLEAR_OBSTACLE_COST 一致）。 */
+/** 每清除一处障碍消耗的电量百分比。 */
 const CLEAR_OBSTACLE_COST = 5.0
 
-/** 过热告警阈值（摄氏度）。 */
-const OVERHEAT_THRESHOLD = 60.0
+/** 温度模型参数（与后端 config.py 对齐）。 */
+const TEMP_BASE = 35.0
+const TEMP_RISE_PER_MOVE = 0.08
+const TEMP_COOL_PER_TICK = 0.03
+const TEMP_MAX = 70.0
 
-/** 传感器读数突变告警阈值（米）。 */
-const SENSOR_JUMP_THRESHOLD = 2.0
+/** 过热告警阈值（摄氏度）。 */
+const OVERHEAT_THRESHOLD = 55.0
+
+/** 传感器单通道相邻帧突变告警阈值（米）。 */
+const SENSOR_JUMP_THRESHOLD = 2.5
+
+/** 同一通道两次告警的最小冷却时间（毫秒）。 */
+const SENSOR_FAULT_COOLDOWN_MS = 10000
 
 /** 同一类异常的最小冷却时间（毫秒），避免重复刷屏。 */
 const ANOMALY_COOLDOWN_MS = 5000
+
+/** 异常历史最多保留条数。 */
+const ANOMALY_LIMIT = 200
+
+/** 待清障记录上限。 */
+const PENDING_LIMIT = 50
+
+/** 回放快照上限。 */
+const SNAPSHOT_LIMIT = 3000
 
 /** localStorage 中地图数据的键名。 */
 const STORAGE_MAP_KEY = 'irm_map_v1'
 
 /** localStorage 中当前内置地图预设标识的键名。 */
 const STORAGE_PRESET_KEY = 'irm_map_preset_v1'
+
+/** 新建地图允许的尺寸范围（与后端一致）。 */
+const MIN_MAP_SIZE = 10
+const MAX_MAP_SIZE = 60
 
 /**
  * 本地仿真器服务类。
@@ -71,16 +103,24 @@ export class SimulatedService extends RobotService {
     this._eventListeners = new Set()
     this._anomalies = []
     this._snapshots = []
-    this._lastSensors = { front: null, left: null, right: null, temperature: 35.0 }
-    this._internalTemp = 35.0
+    this._lastSensors = { front: null, left: null, right: null, temperature: TEMP_BASE }
+    this._internalTemp = TEMP_BASE
     this._anomalyCooldowns = new Map()
+    this._faultCooldowns = new Map()
     this._preChargeMode = 'manual'
-    // 一键路线规划结果（含电力预算），未规划时为 null，随 state 帧下发
+    // 一键路线规划结果（预览），未规划时为 null，随 state 帧下发
     this._plan = null
     // 低电量且充电点不可达的告警去重标记
     this._chargeUnreachableNotified = false
-    // 本 tick 是否发生移动（电量在 tick 末尾按此结算，与后端一致）
+    // 本 tick 是否发生移动（电量在 tick 末尾按此结算）
     this._movedThisTick = false
+    // 待清障记录（巡检跳过时写入）
+    this._pending = []
+    // 巡检遇阻暂停状态
+    this._paused = false
+    this._blocked = null
+    // 充电前是否处于巡检状态（充满自动继续）
+    this._resumePatrolAfterCharge = false
 
     this._initRobotState()
     this._initPatrolState()
@@ -106,7 +146,7 @@ export class SimulatedService extends RobotService {
       speed: 0.0,
       mode: 'manual',
       path: [],
-      sensors: { front: null, left: null, right: null, temperature: 35.0 },
+      sensors: { front: null, left: null, right: null, temperature: TEMP_BASE },
     }
     this._visitedTrail = [[start[0], start[1]]]
   }
@@ -117,11 +157,11 @@ export class SimulatedService extends RobotService {
   _initPatrolState() {
     this._patrol = {
       running: false,
+      paused: false,
       goals: [],
       currentGoalIndex: 0,
       totalGoals: 0,
       pathRemain: 0,
-      // 巡检受阻且无法绕行时，前方待清障障碍格 [x, y]；无阻碍为 null
       blockedBy: null,
     }
   }
@@ -147,8 +187,7 @@ export class SimulatedService extends RobotService {
    * 单个仿真 tick：推进状态、消耗电量、更新传感器、检测异常。
    */
   _tick() {
-    // 空电状态：不移动、不巡检、不再耗电，仅保持传感器刷新，
-    // 等待用户在弹窗中确认后搬回起点
+    // 空电状态：不移动、不巡检、不再耗电，仅保持传感器刷新
     if (this._state.mode === 'empty') {
       this._state.speed = 0.0
       this._updateSensors()
@@ -157,8 +196,6 @@ export class SimulatedService extends RobotService {
       return
     }
 
-    // 本 tick 是否发生移动由 _moveTo 打标，电量在 tick 末尾统一结算，
-    // 与后端 simulation_engine.tick 的“移动/静止/充电三种速率”一致
     this._movedThisTick = false
 
     // 低电量优先处理：充电点可达才自动返回充电点
@@ -168,10 +205,11 @@ export class SimulatedService extends RobotService {
 
     if (this._state.mode === 'charging') {
       this._processCharging()
-    } else if (this._patrol.running) {
+    } else if (this._patrol.running && !this._paused) {
       this._processPatrol()
+    } else if (this._paused) {
+      this._state.speed = 0.0
     } else {
-      // 手动模式下静止，仅保持传感器刷新
       this._state.speed = 0.0
     }
 
@@ -185,7 +223,11 @@ export class SimulatedService extends RobotService {
       this._state.mode = 'empty'
       this._state.speed = 0.0
       this._state.path = []
+      this._paused = false
+      this._blocked = null
+      this._patrol.paused = false
       this._emitEvent('notice', { message: '机器人电量耗尽，已停止移动' })
+      this._emitEvent('empty', { position: [this._state.x, this._state.y] })
       this._emitState()
     }
   }
@@ -199,17 +241,20 @@ export class SimulatedService extends RobotService {
     if (pathResult.path.length === 0) {
       if (!this._chargeUnreachableNotified) {
         this._chargeUnreachableNotified = true
-        this._addAnomaly(
-          'low_battery',
-          '电量过低且充电点不可达，电量将持续耗尽',
-          [this._state.x, this._state.y]
-        )
+        this._addAnomaly('low_battery', '电量过低且充电点不可达，电量将持续耗尽', [
+          this._state.x,
+          this._state.y,
+        ])
       }
       return
     }
     this._preChargeMode = this._state.mode
+    this._resumePatrolAfterCharge = this._patrol.running
     this._state.mode = 'charging'
     this._state.path = pathResult.path
+    this._paused = false
+    this._patrol.paused = false
+    this._blocked = null
     this._addAnomaly(
       'low_battery',
       `电量低于 ${LOW_BATTERY_THRESHOLD}%，自动返回充电点`,
@@ -218,20 +263,38 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 处理充电逻辑。
+   * 处理充电逻辑：只有停在充电点上才回血，充满后恢复原任务。
    */
   _processCharging() {
     const charge = this._map.charge_point
-    if (this._state.x === charge[0] && this._state.y === charge[1]) {
-      this._state.battery = Math.min(100.0, this._state.battery + CHARGE_RATE)
+    const atCharge = this._state.x === charge[0] && this._state.y === charge[1]
+    if (atCharge) {
+      this._state.battery = Math.min(100.0, parseFloat((this._state.battery + CHARGE_RATE).toFixed(2)))
       this._state.speed = 0.0
-      if (this._state.battery >= 90.0) {
-        this._state.mode = this._preChargeMode === 'patrol' && this._patrol.currentGoalIndex < this._patrol.totalGoals ? 'patrol' : 'manual'
+      if (this._state.battery >= 100.0) {
         this._chargeUnreachableNotified = false
-        this._emitEvent('notice', { message: '充电完成，继续当前任务' })
+        if (this._resumePatrolAfterCharge && this._patrol.running) {
+          this._state.mode = 'patrol'
+          this._planToCurrentGoal()
+          this._emitEvent('notice', { message: '充电完成（100%），继续巡检' })
+        } else {
+          this._state.mode = 'manual'
+          this._emitEvent('notice', { message: '充电完成（100%）' })
+        }
+        this._resumePatrolAfterCharge = false
       }
-    } else {
+    } else if (this._state.path && this._state.path.length > 1) {
       this._followPath()
+    } else {
+      // 路径失效：重新规划；实在到不了就放弃返航，避免原地"假装充电"。
+      const retry = astar(this._map.grid, [this._state.x, this._state.y], charge)
+      if (retry.path.length > 1) {
+        this._state.path = retry.path
+      } else {
+        this._state.mode = 'manual'
+        this._state.path = []
+        this._emitEvent('notice', { message: '充电点不可达，已退出返航' })
+      }
     }
   }
 
@@ -242,10 +305,7 @@ export class SimulatedService extends RobotService {
     if (!this._state.path || this._state.path.length <= 1) {
       this._patrol.currentGoalIndex += 1
       if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
-        this._patrol.running = false
-        this._state.mode = 'manual'
-        this._state.path = []
-        this._emitEvent('notice', { message: '巡检任务已完成，可进入路径回放' })
+        this._finishPatrol()
         return
       }
       this._planToCurrentGoal()
@@ -256,20 +316,34 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 沿当前路径前进一步。
-   * 巡检模式下路径格被占用时不触发撞障告警，转 _handlePatrolBlocked
-   * 优先绕行、绕不动则标记待清障目标（V1.2）。
+   * 结束巡检：保留进度（不再把 completed 清零）。
+   */
+  _finishPatrol() {
+    this._patrol.running = false
+    this._patrol.paused = false
+    this._patrol.currentGoalIndex = this._patrol.totalGoals
+    this._patrol.pathRemain = 0
+    this._paused = false
+    this._blocked = null
+    this._state.mode = 'manual'
+    this._state.path = []
+    this._state.speed = 0.0
+    this._emitEvent('notice', { message: '巡检任务已完成，可进入路径回放' })
+    this._emitState()
+  }
+
+  /**
+   * 沿当前路径前进一步（电量在本 tick 末尾统一结算，避免重复扣电）。
    */
   _followPath() {
     const next = this._state.path[1]
     if (this._canMoveTo(next)) {
       this._moveTo(next)
       this._state.path.shift()
-      this._updateBatteryAndTemperature(true)
       if (this._patrol.running) {
         this._patrol.pathRemain = Math.max(0, this._state.path.length - 1)
       }
-    } else if (this._patrol.running) {
+    } else if (this._patrol.running && !this._paused) {
       this._handlePatrolBlocked(next)
     } else {
       this._setBlocked()
@@ -277,8 +351,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 巡检路径受阻处理（V1.2）：优先重规划绕行；无法绕行时把前方障碍
-   * 标记为“待清障目标”，由用户一键清除后继续巡检，不中断巡检、不报障告警。
+   * 巡检路径受阻：优先重规划绕行；绕不动则暂停并抛出 blocked 事件等待用户决策。
    *
    * @param {number[]} blockedCell - 被占用的路径格 [x, y]。
    */
@@ -289,23 +362,29 @@ export class SimulatedService extends RobotService {
       if (detour.path.length > 1) {
         this._state.path = detour.path
         this._patrol.pathRemain = Math.max(0, detour.path.length - 1)
-        if (this._patrol.blockedBy) {
+        if (this._blocked || this._paused) {
+          this._blocked = null
+          this._paused = false
+          this._patrol.paused = false
           this._patrol.blockedBy = null
           this._emitEvent('notice', { message: '已自动绕开障碍，继续巡检' })
         }
         return
       }
     }
-    const changed =
-      !this._patrol.blockedBy ||
-      this._patrol.blockedBy[0] !== blockedCell[0] ||
-      this._patrol.blockedBy[1] !== blockedCell[1]
-    if (changed) {
-      this._patrol.blockedBy = [blockedCell[0], blockedCell[1]]
-      this._emitEvent('notice', {
-        message: `巡检受阻：前方 [${blockedCell[0]}, ${blockedCell[1]}] 有障碍，可一键清障（不会中断巡检）`,
-      })
-    }
+
+    this._paused = true
+    this._patrol.paused = true
+    this._patrol.blockedBy = [blockedCell[0], blockedCell[1]]
+    this._blocked = { cell: [blockedCell[0], blockedCell[1]], reason: 'obstacle' }
+    this._state.speed = 0.0
+    this._emitEvent('blocked', {
+      cell: [blockedCell[0], blockedCell[1]],
+      message: `巡检受阻：前方 [${blockedCell[0]}, ${blockedCell[1]}] 有障碍，是否清除？`,
+      battery: Math.round(this._state.battery * 10) / 10,
+      clear_cost: CLEAR_OBSTACLE_COST,
+    })
+    this._emitState()
   }
 
   /**
@@ -321,6 +400,7 @@ export class SimulatedService extends RobotService {
     this._state.theta = this._directionToTheta(dx, dy)
     this._state.speed = 1.0
     this._movedThisTick = true
+    this._internalTemp = Math.min(TEMP_MAX, this._internalTemp + TEMP_RISE_PER_MOVE)
     this._visitedTrail.push([next[0], next[1]])
   }
 
@@ -362,30 +442,29 @@ export class SimulatedService extends RobotService {
     this._addAnomaly('obstacle', '前方遇到障碍物，机器人已停止', [this._state.x, this._state.y])
     if (this._patrol.running) {
       this._patrol.running = false
+      this._patrol.paused = false
     }
   }
 
   /**
    * 更新电量与内部温度。
    *
-   * 计费规则与后端一致：仅“已到达充电点且静止充电”时不耗电；
-   * 返航途中与普通移动一样按格计费，静止时按 idle 速率漏电。
+   * 计费规则与后端一致：本 tick 发生移动扣移动耗电；否则扣待机耗电（默认 0）。
+   * 充电回血只在"停在充电点"时由 _processCharging 处理，这里不重复计算。
    *
    * @param {boolean} moving - 本 tick 是否发生移动。
    */
   _updateBatteryAndTemperature(moving) {
-    const charge = this._map.charge_point
-    const atChargePoint = this._state.x === charge[0] && this._state.y === charge[1]
-    const chargingAtPoint = this._state.mode === 'charging' && !moving && atChargePoint
-    if (!chargingAtPoint) {
-      const cost = moving ? BATTERY_MOVE_COST : BATTERY_IDLE_COST
-      this._state.battery = Math.max(0.0, parseFloat((this._state.battery - cost).toFixed(2)))
-    }
-
     if (moving) {
-      this._internalTemp += 0.1
+      this._state.battery = Math.max(0.0, parseFloat((this._state.battery - BATTERY_MOVE_COST).toFixed(2)))
     } else {
-      this._internalTemp = Math.max(35.0, this._internalTemp - 0.05)
+      if (BATTERY_IDLE_COST > 0) {
+        this._state.battery = Math.max(
+          0.0,
+          parseFloat((this._state.battery - BATTERY_IDLE_COST).toFixed(2))
+        )
+      }
+      this._internalTemp = Math.max(TEMP_BASE, this._internalTemp - TEMP_COOL_PER_TICK)
     }
   }
 
@@ -450,26 +529,33 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 检测传感器读数是否发生突变。
+   * 检测传感器读数是否发生突变（同一通道跨帧比较，跨方向差异不算故障）。
    *
    * @param {Object} sensors - 当前传感器读数。
    */
   _detectSensorJump(sensors) {
     const names = ['front', 'left', 'right']
+    const now = Date.now()
     for (const name of names) {
       const current = sensors[name]
       const previous = this._lastSensors[name]
       if (current === null || previous === null) {
         continue
       }
-      if (Math.abs(current - previous) >= SENSOR_JUMP_THRESHOLD) {
-        this._addAnomaly(
-          'sensor_fault',
-          `${name === 'front' ? '前方' : name === 'left' ? '左侧' : '右侧'}传感器读数异常跳变`,
-          [this._state.x, this._state.y]
-        )
-        break
+      if (Math.abs(current - previous) < SENSOR_JUMP_THRESHOLD) {
+        continue
       }
+      const last = this._faultCooldowns.get(name) || 0
+      if (now - last < SENSOR_FAULT_COOLDOWN_MS) {
+        continue
+      }
+      this._faultCooldowns.set(name, now)
+      this._addAnomaly(
+        'sensor_fault',
+        `${name === 'front' ? '正前方' : name === 'left' ? '左侧' : '右侧'}传感器读数异常跳变`,
+        [this._state.x, this._state.y]
+      )
+      break
     }
   }
 
@@ -480,11 +566,7 @@ export class SimulatedService extends RobotService {
    */
   _detectOverheat(temperature) {
     if (temperature > OVERHEAT_THRESHOLD) {
-      this._addAnomaly(
-        'overheat',
-        `机身温度过高：${temperature}℃`,
-        [this._state.x, this._state.y]
-      )
+      this._addAnomaly('overheat', `机身温度过高：${temperature}℃`, [this._state.x, this._state.y])
     }
   }
 
@@ -510,7 +592,7 @@ export class SimulatedService extends RobotService {
       position,
     }
     this._anomalies.unshift(anomaly)
-    if (this._anomalies.length > 200) {
+    if (this._anomalies.length > ANOMALY_LIMIT) {
       this._anomalies.pop()
     }
     this._emitEvent('anomaly', anomaly)
@@ -518,6 +600,8 @@ export class SimulatedService extends RobotService {
 
   /**
    * 记录当前 tick 的状态快照，用于回放。
+   *
+   * 只记录尾迹长度而不是深拷贝整条尾迹：原先每帧复制一次，长跑后内存会爆。
    */
   _recordSnapshot() {
     this._snapshots.push({
@@ -528,11 +612,10 @@ export class SimulatedService extends RobotService {
       battery: this._state.battery,
       mode: this._state.mode,
       path: this._state.path.map((p) => [...p]),
-      visitedTrail: this._visitedTrail.map((p) => [...p]),
+      trailLen: this._visitedTrail.length,
       sensors: { ...this._state.sensors },
     })
-    // 限制回放长度，防止内存无限增长
-    if (this._snapshots.length > 5000) {
+    if (this._snapshots.length > SNAPSHOT_LIMIT) {
       this._snapshots.shift()
     }
   }
@@ -568,26 +651,32 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 为当前巡检点规划 A* 路径。
+   * 为当前巡检点规划 A* 路径（不可达时跳过并继续下一个）。
    */
   _planToCurrentGoal() {
-    const goal = this._patrol.goals[this._patrol.currentGoalIndex]
-    const result = astar(this._map.grid, [this._state.x, this._state.y], goal)
-    if (result.path.length === 0) {
-      this._addAnomaly('obstacle', `无法到达巡检点 [${goal[0]}, ${goal[1]}]`, [this._state.x, this._state.y])
-      this._patrol.currentGoalIndex += 1
-      if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
-        this._patrol.running = false
-        this._state.mode = 'manual'
+    for (let guard = 0; guard <= this._patrol.goals.length; guard += 1) {
+      const goal = this._patrol.goals[this._patrol.currentGoalIndex]
+      if (!goal) {
         this._state.path = []
-        this._emitEvent('notice', { message: '巡检任务已完成，可进入路径回放' })
         return
       }
-      this._planToCurrentGoal()
-      return
+      const result = astar(this._map.grid, [this._state.x, this._state.y], goal)
+      if (result.path.length > 0) {
+        this._state.path = result.path
+        this._patrol.pathRemain = Math.max(0, result.path.length - 1)
+        return
+      }
+      this._addAnomaly('obstacle', `无法到达巡检点 [${goal[0]}, ${goal[1]}]，已跳过`, [
+        this._state.x,
+        this._state.y,
+      ])
+      this._patrol.currentGoalIndex += 1
+      if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
+        this._finishPatrol()
+        return
+      }
     }
-    this._state.path = result.path
-    this._patrol.pathRemain = Math.max(0, result.path.length - 1)
+    this._state.path = []
   }
 
   /**
@@ -605,7 +694,12 @@ export class SimulatedService extends RobotService {
         mode: this._state.mode,
         path: this._state.path.map((p) => [...p]),
         sensors: { ...this._state.sensors },
+        patrol: this.getPatrolStatus(),
         plan: this._plan,
+        paused: this._paused,
+        blocked: this._blocked,
+        pending: this._pending.map((c) => [...c]),
+        trail_len: this._visitedTrail.length,
       },
     }
     for (const callback of this._stateListeners) {
@@ -620,7 +714,7 @@ export class SimulatedService extends RobotService {
   /**
    * 推送事件帧到所有监听器。
    *
-   * @param {string} eventType - 事件类型（anomaly / notice）。
+   * @param {string} eventType - 事件类型（anomaly / notice / blocked / empty）。
    * @param {Object} data - 事件载荷。
    */
   _emitEvent(eventType, data) {
@@ -635,8 +729,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 从 localStorage 加载地图，不存在则生成默认地图。
-   * 同时恢复上次使用的内置地图预设标识（自定义地图时为 null）。
+   * 从 localStorage 加载地图，不存在或数据损坏则回落到默认地图。
    *
    * @returns {Object} 地图对象。
    */
@@ -651,10 +744,12 @@ export class SimulatedService extends RobotService {
       const stored = localStorage.getItem(STORAGE_MAP_KEY)
       if (stored) {
         const parsed = JSON.parse(stored)
-        if (parsed && parsed.grid && parsed.width && parsed.height) {
+        const check = validateMap(parsed)
+        if (check.ok) {
           this._presetKey = presetKey
-          return parsed
+          return check.map
         }
+        console.warn('本地地图校验失败，已恢复默认地图：', check.error)
       }
     } catch (error) {
       console.warn('地图本地存储加载失败，使用默认地图：', error)
@@ -712,8 +807,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 本地仿真模式下地图即权威来源，直接返回当前地图
-   * （与 RemoteService.fetchMap 保持接口对称）。
+   * 本地仿真模式下地图即权威来源，直接返回当前地图。
    * @returns {Promise<Object>} 当前地图对象。
    */
   async fetchMap() {
@@ -725,14 +819,68 @@ export class SimulatedService extends RobotService {
    * @param {Object} map - 完整地图对象。
    */
   updateMap(map) {
-    // 真正的边界：任何地图更新都强制补齐四周边界墙
     enforceBorder(map.grid, map.width, map.height)
     this._map = map
     this._presetKey = null
-    // 地图整体变更后旧规划失去意义，直接作废
     this._plan = null
+    this._paused = false
+    this._blocked = null
+    this._patrol.paused = false
+    this._patrol.running = false
+    this._patrol.blockedBy = null
+    this._state.path = []
+    this._pending = this._pending.filter(
+      ([x, y]) => x > 0 && y > 0 && x < map.width - 1 && y < map.height - 1 && map.grid[y][x] === 1
+    )
+    // 机器人所在格被画成障碍时，复位到起点（与后端一致）。
+    if (!this._canMoveTo([this._state.x, this._state.y])) {
+      this._state.x = map.start[0]
+      this._state.y = map.start[1]
+      this._visitedTrail.push([this._state.x, this._state.y])
+    }
+    if (this._state.mode !== 'empty') {
+      this._state.mode = 'manual'
+    }
     this._saveMap()
     this._savePresetKey()
+  }
+
+  /**
+   * 新建空白地图（仅保留四周边界墙）并复位机器人（V2.0）。
+   *
+   * @param {number} width - 宽度（列数）。
+   * @param {number} height - 高度（行数）。
+   */
+  newMap(width, height) {
+    const w = Math.max(MIN_MAP_SIZE, Math.min(MAX_MAP_SIZE, Math.round(width)))
+    const h = Math.max(MIN_MAP_SIZE, Math.min(MAX_MAP_SIZE, Math.round(height)))
+    const grid = Array.from({ length: h }, () => Array(w).fill(0))
+    enforceBorder(grid, w, h)
+    const map = {
+      width: w,
+      height: h,
+      grid,
+      start: [1, 1],
+      goals: [],
+      charge_point: [w - 2, h - 2],
+    }
+    this._map = map
+    this._presetKey = null
+    this._plan = null
+    this._pending = []
+    this._blocked = null
+    this._paused = false
+    this._initRobotState()
+    this._initPatrolState()
+    this._internalTemp = TEMP_BASE
+    this._snapshots = []
+    this._visitedTrail = [[1, 1]]
+    this._saveMap()
+    this._savePresetKey()
+    this._updateSensors()
+    this._recordSnapshot()
+    this._emitState()
+    this._emitEvent('notice', { message: `已新建 ${w}×${h} 空白地图，可直接绘制障碍与巡检点` })
   }
 
   /**
@@ -745,17 +893,18 @@ export class SimulatedService extends RobotService {
       this._emitEvent('notice', { message: '未找到该内置地图' })
       return
     }
-    // 真正的边界：预设同样强制补齐边界墙
     enforceBorder(presetMap.grid, presetMap.width, presetMap.height)
     this._map = presetMap
     this._presetKey = key
     this._plan = null
+    this._pending = []
+    this._blocked = null
+    this._paused = false
     this._saveMap()
     this._savePresetKey()
-    // 机器人复位到新地图起点，避免停留在可能变为障碍的位置
     this._initRobotState()
     this._initPatrolState()
-    this._internalTemp = 35.0
+    this._internalTemp = TEMP_BASE
     this._snapshots = []
     this._updateSensors()
     this._recordSnapshot()
@@ -773,7 +922,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 手动移动机器人。
+   * 手动移动机器人（会中断自动巡检与充电）。
    * @param {number} dx - x 方向增量。
    * @param {number} dy - y 方向增量。
    */
@@ -788,12 +937,25 @@ export class SimulatedService extends RobotService {
     }
     const target = [this._state.x + dx, this._state.y + dy]
     if (this._canMoveTo(target)) {
+      const wasPatrol = this._patrol.running
+      const wasCharging = this._state.mode === 'charging'
+      if (wasPatrol || wasCharging || this._paused) {
+        this._patrol.running = false
+        this._patrol.paused = false
+        this._patrol.blockedBy = null
+        this._paused = false
+        this._blocked = null
+        this._resumePatrolAfterCharge = false
+        this._preChargeMode = 'manual'
+      }
       this._moveTo(target)
-      this._updateBatteryAndTemperature(true)
+      this._state.battery = Math.max(
+        0.0,
+        parseFloat((this._state.battery - BATTERY_MOVE_COST).toFixed(2))
+      )
       this._state.path = []
       this._state.mode = 'manual'
-      if (this._patrol.running) {
-        this._patrol.running = false
+      if (wasPatrol) {
         this._emitEvent('notice', { message: '手动控制已中断自动巡检' })
       }
       this._updateSensors()
@@ -807,24 +969,41 @@ export class SimulatedService extends RobotService {
 
   /**
    * 将机器人复位到起点。
+   *
+   * @param {boolean} keepTrail - true = 重新开始并保留尾迹；false = 连尾迹一起清空。
    */
-  reset() {
+  reset(keepTrail = false) {
+    const trail = this._visitedTrail
     this._initRobotState()
     this._initPatrolState()
-    this._internalTemp = 35.0
+    this._internalTemp = TEMP_BASE
     this._snapshots = []
     this._plan = null
+    this._paused = false
+    this._blocked = null
     this._chargeUnreachableNotified = false
+    this._resumePatrolAfterCharge = false
+    if (keepTrail) {
+      this._visitedTrail = [...trail, [this._state.x, this._state.y]]
+    }
     this._updateSensors()
     this._recordSnapshot()
     this._emitState()
-    this._emitEvent('notice', { message: '机器人已复位到起点' })
+    this._emitEvent('notice', {
+      message: keepTrail ? '机器人已重新开始，保留历史尾迹' : '机器人已复位到起点',
+    })
+  }
+
+  /**
+   * 重新开始：复位机器人但保留已走过的尾迹（V2.0）。
+   */
+  restart() {
+    this.reset(true)
   }
 
   /**
    * 一键排障：机器人被障碍卡住（mode=blocked）时，按当前朝向找到正前方
    * 障碍格并清除，随后恢复正常控制；无阻塞时仅推送系统提示。
-   * 与后端 SimulationEngine.resolve_fault 行为保持一致。
    */
   resolveFault() {
     if (this._state.mode !== 'blocked') {
@@ -839,7 +1018,6 @@ export class SimulatedService extends RobotService {
       this._map.grid[target[1]][target[0]] === 1
     ) {
       if (isBoundaryCell(target[0], target[1], this._map.width, this._map.height)) {
-        // 边界墙不可清除：仅恢复控制权，提示用户转向脱离
         this._state.mode = 'manual'
         this._state.path = []
         this._updateSensors()
@@ -860,9 +1038,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 一键规划路线（V1.2）：理论最短路径（可穿越普通障碍）+ 电力预算内的待清障目标。
-   * 规划结果随 state 帧下发，界面据此绘制闪烁虚线与红色清障标记。
-   *
+   * 一键规划路线（V2.0 语义：预览，不移动机器人）。
    * @param {number[]} goal - 目标点坐标 [x, y]。
    * @returns {Object} 路线规划对象（字段与后端 build_plan 一致）。
    */
@@ -890,7 +1066,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 地图/电量变化后按原目标重算路线规划（无规划时跳过，与后端 _refresh_plan 对应）。
+   * 地图/电量变化后按原目标重算路线规划（无规划时跳过）。
    */
   _refreshPlan() {
     if (!this._plan) {
@@ -907,10 +1083,9 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 清除指定障碍格（V1.2 手动清障 / 规划内清障）。
+   * 清除指定障碍格（手动清障 / 计划内清障）。
    *
-   * 真正的边界：最外环边界墙不可清除；空电状态下不可执行；非障碍格拒绝。
-   * 每清除一处扣除 CLEAR_OBSTACLE_COST 电量，并刷新当前路线规划。
+   * 边界墙、非障碍格、空电、电量不足都会被拒绝；每处扣除固定清障电量。
    *
    * @param {number[]} cell - 障碍坐标 [x, y]。
    */
@@ -936,12 +1111,31 @@ export class SimulatedService extends RobotService {
       this._emitState()
       return
     }
+    if (this._state.battery < CLEAR_OBSTACLE_COST) {
+      this._emitEvent('notice', {
+        message: `电量不足（需 ${CLEAR_OBSTACLE_COST.toFixed(0)}%），无法清障；请先返航充电`,
+      })
+      this._emitState()
+      return
+    }
     this._map.grid[y][x] = 0
-    this._state.battery = Math.max(0.0, parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2)))
-    this._emitEvent('notice', { message: `已清除障碍 [${x}, ${y}]，消耗电量 ${CLEAR_OBSTACLE_COST.toFixed(0)}%` })
-    // 清除的正是巡检受阻点时解除标记，巡检将在下一 tick 恢复推进
-    if (this._patrol.blockedBy && this._patrol.blockedBy[0] === x && this._patrol.blockedBy[1] === y) {
+    this._state.battery = Math.max(
+      0.0,
+      parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2))
+    )
+    this._emitEvent('notice', {
+      message: `已清除障碍 [${x}, ${y}]，消耗电量 ${CLEAR_OBSTACLE_COST.toFixed(0)}%`,
+    })
+    this._pending = this._pending.filter((c) => !(c[0] === x && c[1] === y))
+    if (this._blocked && this._blocked.cell[0] === x && this._blocked.cell[1] === y) {
+      this._blocked = null
+      this._paused = false
+      this._patrol.paused = false
       this._patrol.blockedBy = null
+      if (this._patrol.running) {
+        this._planToCurrentGoal()
+        this._emitEvent('notice', { message: '障碍已清除，继续巡检' })
+      }
     }
     this._saveMap()
     this._refreshPlan()
@@ -949,7 +1143,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 按当前路线规划批量清除电力预算内的障碍（每处扣除清障电量）。
+   * 按当前路线规划批量清除电力预算内的障碍（逐处判断电量）。
    */
   executePlanClear() {
     if (this._state.mode === 'empty') {
@@ -970,28 +1164,111 @@ export class SimulatedService extends RobotService {
       if (this._map.grid[y][x] !== 1) {
         continue
       }
+      if (this._state.battery < CLEAR_OBSTACLE_COST) {
+        break
+      }
       this._map.grid[y][x] = 0
       this._state.battery = Math.max(
         0.0,
         parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2))
       )
+      this._pending = this._pending.filter((c) => !(c[0] === x && c[1] === y))
       cleared += 1
     }
     this._patrol.blockedBy = null
+    if (this._blocked) {
+      this._blocked = null
+      this._paused = false
+      this._patrol.paused = false
+    }
     this._emitEvent('notice', {
-      message: `已按规划清除 ${cleared} 处障碍，共耗电 ${(cleared * CLEAR_OBSTACLE_COST).toFixed(0)}%`,
+      message: cleared
+        ? `已按规划清除 ${cleared} 处障碍，共耗电 ${(cleared * CLEAR_OBSTACLE_COST).toFixed(0)}%`
+        : '电量不足，未能清除任何障碍；请先返航充电',
     })
+    if (this._patrol.running) {
+      this._planToCurrentGoal()
+    }
     this._saveMap()
     this._refreshPlan()
     this._emitState()
   }
 
   /**
-   * 空电搬回（V1.2）：用户确认后将机器人传送回地图起点并恢复满电。
-   * 与后端 carry_home 行为一致：停巡检、回起点、满电、手动模式、作废规划。
+   * 一键清除待清障记录中离机器人最近的一处（V2.0）。
+   */
+  clearNearestPending() {
+    this._pending = this._pending.filter(
+      ([x, y]) =>
+        x > 0 && y > 0 && x < this._map.width - 1 && y < this._map.height - 1 && this._map.grid[y][x] === 1
+    )
+    if (this._pending.length === 0) {
+      this._emitEvent('notice', { message: '没有待清障记录' })
+      this._emitState()
+      return
+    }
+    const nearest = this._pending.reduce((best, cur) => {
+      const d = this._manhattan([this._state.x, this._state.y], cur)
+      const bd = this._manhattan([this._state.x, this._state.y], best)
+      return d < bd ? cur : best
+    }, this._pending[0])
+    this.clearObstacleAt([...nearest])
+  }
+
+  /**
+   * 巡检遇阻决策（V2.0）：clear 清除并继续 / skip 跳过并记录 / stop 停止。
+   * @param {'clear'|'skip'|'stop'} action - 决策动作。
+   */
+  patrolDecision(action) {
+    if (!this._blocked) {
+      this._emitEvent('notice', { message: '当前没有待决策的巡检阻碍' })
+      return
+    }
+    const cell = [...this._blocked.cell]
+    if (action === 'clear') {
+      this.clearObstacleAt(cell)
+    } else if (action === 'skip') {
+      if (!this._pending.some((c) => c[0] === cell[0] && c[1] === cell[1])) {
+        if (this._pending.length >= PENDING_LIMIT) {
+          this._pending.shift()
+        }
+        this._pending.push(cell)
+      }
+      this._blocked = null
+      this._paused = false
+      this._patrol.paused = false
+      this._patrol.blockedBy = null
+      this._patrol.currentGoalIndex += 1
+      this._emitEvent('notice', {
+        message: `已跳过该巡检点，障碍 [${cell[0]}, ${cell[1]}] 已记入待清障记录`,
+      })
+      if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
+        this._finishPatrol()
+      } else {
+        this._planToCurrentGoal()
+      }
+      this._emitState()
+    } else if (action === 'stop') {
+      this.stopPatrol()
+    } else {
+      this._emitEvent('notice', { message: '未知的决策动作' })
+    }
+  }
+
+  /**
+   * 获取待清障记录。
+   * @returns {number[][]} 坐标数组。
+   */
+  getPending() {
+    return this._pending.map((c) => [...c])
+  }
+
+  /**
+   * 空电搬回：用户确认后将机器人传送回地图起点并恢复满电。
    */
   carryBackHome() {
     this._patrol.running = false
+    this._patrol.paused = false
     const start = this._map.start
     this._state.x = start[0]
     this._state.y = start[1]
@@ -1000,7 +1277,10 @@ export class SimulatedService extends RobotService {
     this._state.mode = 'manual'
     this._state.path = []
     this._plan = null
+    this._paused = false
+    this._blocked = null
     this._chargeUnreachableNotified = false
+    this._internalTemp = TEMP_BASE
     this._visitedTrail.push([start[0], start[1]])
     this._updateSensors()
     this._recordSnapshot()
@@ -1009,7 +1289,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 取消当前路线规划（V1.2）：作废规划缓存，界面停止展示闪烁虚线与标记。
+   * 取消当前路线规划（预览）。
    */
   cancelPlan() {
     this._plan = null
@@ -1032,20 +1312,28 @@ export class SimulatedService extends RobotService {
    * @param {number[][]} goals - 巡检点数组，缺省时使用地图预设巡检点。
    */
   startPatrol(goals) {
+    if (this._state.mode === 'empty') {
+      this._emitEvent('notice', { message: '电量耗尽，无法开始巡检；请先搬回初始点' })
+      return
+    }
     const targetGoals = goals && goals.length > 0 ? goals : this._map.goals
-    if (targetGoals.length === 0) {
+    if (!targetGoals || targetGoals.length === 0) {
       this._emitEvent('notice', { message: '没有可用的巡检点' })
       return
     }
     this._snapshots = []
     this._patrol = {
       running: true,
+      paused: false,
       goals: this._orderGoals(targetGoals),
       currentGoalIndex: 0,
       totalGoals: targetGoals.length,
       pathRemain: 0,
       blockedBy: null,
     }
+    this._paused = false
+    this._blocked = null
+    this._resumePatrolAfterCharge = false
     this._state.mode = 'patrol'
     this._planToCurrentGoal()
     this._updateSensors()
@@ -1058,6 +1346,10 @@ export class SimulatedService extends RobotService {
    */
   stopPatrol() {
     this._patrol.running = false
+    this._patrol.paused = false
+    this._patrol.blockedBy = null
+    this._paused = false
+    this._blocked = null
     this._state.mode = 'manual'
     this._state.path = []
     this._emitEvent('notice', { message: '自动巡检已停止' })
@@ -1065,23 +1357,25 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 获取当前巡检状态。
-   * @returns {Object} { running, current_goal, progress, path_remain, blocked_by }。
-   *   blocked_by 为巡检受阻且无法绕行时前方待清障障碍格 [x, y]，无阻碍为 null。
+   * 获取当前巡检状态（progress 为 0~1 比例，与后端一致）。
+   * @returns {Object} { running, paused, current_goal, progress, completed, total, path_remain, blocked_by }。
    */
   getPatrolStatus() {
     const currentGoal =
       this._patrol.running && this._patrol.currentGoalIndex < this._patrol.totalGoals
         ? this._patrol.goals[this._patrol.currentGoalIndex]
         : null
-    let progress = 0
-    if (this._patrol.totalGoals > 0) {
-      progress = Math.round((this._patrol.currentGoalIndex / this._patrol.totalGoals) * 100)
-    }
+    const progress =
+      this._patrol.totalGoals > 0
+        ? Math.min(1, this._patrol.currentGoalIndex / this._patrol.totalGoals)
+        : 0
     return {
       running: this._patrol.running,
+      paused: this._patrol.paused,
       current_goal: currentGoal,
       progress,
+      completed: this._patrol.currentGoalIndex,
+      total: this._patrol.totalGoals,
       path_remain: this._patrol.pathRemain,
       blocked_by: this._patrol.blockedBy,
     }
@@ -1130,7 +1424,7 @@ export class SimulatedService extends RobotService {
   }
 
   /**
-   * 获取回放快照数据。
+   * 获取回放快照数据（快照里只存尾迹长度，回放时按长度切片）。
    * @returns {Object[]} 状态快照数组。
    */
   getSnapshots() {

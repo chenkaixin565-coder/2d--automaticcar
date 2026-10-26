@@ -1,6 +1,7 @@
-# 智能巡检机器人二维仿真系统 V1.2
+# 智能巡检机器人二维仿真系统 V2.0
 
 > 大学生社团培训班结业项目 —— 全栈版（FastAPI 后端 + Vue 前端，单容器部署）。
+> V2.0 在 V1.2 基础上重做了交互（规划=预览 / 遇阻=暂停询问 / 尾迹可隐藏），并修复了 22 项一致性缺陷。
 
 ## 项目简介
 
@@ -10,7 +11,20 @@
 
 ## 功能特性
 
-- 二维栅格地图编辑（绘制/擦除障碍物、设置起点与充电点）
+### V2.0 新增
+
+- **巡检遇阻三选一**：停在障碍前一格，弹窗选择「清除并继续（-5%）/ 跳过并记入待清障 / 停止」
+- **待清障记录与一键清最近**：跳过的障碍留痕（地图橙色叉号 + 面板计数），按距离由近到远清除
+- **新建地图 / 重新开始**：一键新建空白图（可选尺寸）；重新开始保留尾迹，复位则清空
+- **尾迹开关**：默认隐藏，可手动显示，线型统一为细虚线
+- **随动平移**：取消"平移模式"，任何模式下都能拖拽/滚轮移动地图（障碍模式用右键拖拽）
+- **规划 = 预览**：先看闪烁虚线与电力预算，再决定是否开始巡检
+- **机器人形象重绘**：机身 + 双轮 + 传感器穹顶 + 朝向箭头 + 状态灯
+- **悬停详情**：坐标、是否可通行、到达该格的理论耗电
+
+### 基础能力
+
+- 二维栅格地图编辑（拖动绘制障碍、设置起点与充电点）
 - 手动遥控（方向键 / 屏幕摇杆）与自动巡检（最近邻 + A* 贪心路径）
 - A* 自动寻路、实时避障、低电量自动返航充电
 - 虚拟传感器：三向超声波测距、电量、温度，数据随仿真 tick 联动
@@ -110,9 +124,16 @@ cd frontend && npm install && npm run dev
 | POST | `/api/v1/plan/cancel` | 取消当前路线规划（V1.2） |
 | POST | `/api/v1/robot/clear-obstacle` | 手动清除指定障碍格（V1.2） |
 | POST | `/api/v1/robot/carry-home` | 空电后将机器人搬回起点（V1.2） |
+| POST | `/api/v1/map/new` | 新建空白地图（V2.0） |
+| POST | `/api/v1/patrol/decision` | 巡检遇阻决策：clear / skip / stop（V2.0） |
+| POST | `/api/v1/robot/clear-nearest-pending` | 清除最近的待清障障碍（V2.0） |
+| GET  | `/api/v1/robot/pending` | 待清障记录列表（V2.0） |
+| POST | `/api/v1/robot/reset?keep_trail=true` | 重新开始并保留尾迹（V2.0） |
 | WS  | `/api/v1/ws` | 状态帧（200ms）/ 异常·通知事件帧 / 指令下行 |
 
-WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"reset"|"resolve_fault"|"plan"|"clear_obstacle"|"execute_plan_clear"|"carry_home"|"cancel_plan", payload:{...}}`。
+WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"patrol_decision"|"reset"|"restart"|"resolve_fault"|"plan"|"clear_obstacle"|"clear_nearest_pending"|"execute_plan_clear"|"carry_home"|"cancel_plan"|"new_map", payload:{...}}`。
+
+WebSocket 帧类型：`state`（200ms 状态帧，含 `paused` / `blocked` / `pending`）、`anomaly`、`notice`、`blocked`（巡检遇阻，前端弹窗）、`empty`（电量耗尽）。
 
 ## 目录结构
 

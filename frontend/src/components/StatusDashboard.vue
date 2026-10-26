@@ -13,7 +13,7 @@
       </div>
       <div class="p-2 rounded-lg bg-gray-50 dark:bg-gray-800">
         <span class="text-gray-500 dark:text-gray-400">速度</span>
-        <div class="font-mono text-gray-900 dark:text-gray-100">{{ robot.speed.toFixed(2) }} m/s</div>
+        <div class="font-mono text-gray-900 dark:text-gray-100">{{ robot.speed.toFixed(2) }} <span class="text-xs text-gray-400">格/步</span></div>
       </div>
       <div class="p-2 rounded-lg bg-gray-50 dark:bg-gray-800">
         <span class="text-gray-500 dark:text-gray-400">模式</span>
@@ -56,16 +56,25 @@
       </div>
     </div>
 
-    <!-- 温度曲线 -->
-    <div>
-      <div class="flex justify-between text-xs mb-1">
-        <span class="text-gray-600 dark:text-gray-300">温度趋势（最近 60 秒）</span>
-        <span class="font-mono" :class="tempClass">{{ robot.sensors.temperature.toFixed(1) }}℃</span>
+    <!-- 温度（V2.0：默认隐藏，避免占用面板；点击标题右侧开关可展开） -->
+    <div class="border-t border-gray-100 dark:border-gray-800 pt-3">
+      <button
+        type="button"
+        class="w-full flex justify-between items-center text-xs text-gray-600 dark:text-gray-300"
+        @click="$emit('toggle-temperature')"
+      >
+        <span>温度监测{{ showTemperature ? '' : '（已隐藏）' }}</span>
+        <span class="flex items-center gap-2">
+          <span v-if="showTemperature" class="font-mono" :class="tempClass">{{ robot.sensors.temperature.toFixed(1) }}℃</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-700">{{ showTemperature ? '收起' : '展开' }}</span>
+        </span>
+      </button>
+      <div v-if="showTemperature" class="mt-2">
+        <canvas
+          ref="chartRef"
+          class="w-full h-24 rounded-lg bg-gray-50 dark:bg-gray-800"
+        />
       </div>
-      <canvas
-        ref="chartRef"
-        class="w-full h-24 rounded-lg bg-gray-50 dark:bg-gray-800"
-      />
     </div>
   </div>
 </template>
@@ -80,7 +89,7 @@
  * 展示机器人坐标、电量、模式、三向传感器距离以及最近 60 秒温度折线图。
  */
 
-import { computed, watch, ref, onMounted } from 'vue'
+import { computed, watch, ref, onMounted, nextTick } from 'vue'
 
 const props = defineProps({
   robot: {
@@ -91,7 +100,14 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  // 是否展开温度面板（V2.0：默认隐藏）
+  showTemperature: {
+    type: Boolean,
+    default: false,
+  },
 })
+
+defineEmits(['toggle-temperature'])
 
 const chartRef = ref(null)
 
@@ -133,6 +149,8 @@ function sensorPercent(value) {
 
 onMounted(() => drawChart())
 watch(() => [props.temperatureHistory, props.robot.sensors.temperature], () => drawChart(), { deep: true })
+// 展开/收起温度面板后 canvas 才挂载，需要等 DOM 更新再重绘一次
+watch(() => props.showTemperature, () => nextTick(() => drawChart()))
 
 function drawChart() {
   const canvas = chartRef.value

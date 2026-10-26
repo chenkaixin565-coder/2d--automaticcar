@@ -29,6 +29,21 @@ class SensorSimulator:
         self.grid = grid
         # 故障注入开关：每 tick 以该概率制造离群/卡死读数，用于异常检测演示。
         self.fault_prob: float = config.settings.sensor_fault_prob
+        # V2.0：机身温度改为有状态的累积模型（原实现每 tick 由基线重算，
+        # 永远到不了过热阈值，"机身温度过高"告警实际上是死代码）。
+        self.temperature: float = config.settings.base_temperature
+
+    def reset_temperature(self) -> None:
+        """复位机身温度到基线（复位 / 搬回 / 新建地图时调用）。"""
+        self.temperature = config.settings.base_temperature
+
+    def note_move(self) -> None:
+        """记录一次"手动移动"造成的温升（手动移动不走 tick 的移动结算）。"""
+        settings = config.settings
+        self.temperature = min(
+            settings.temperature_max,
+            self.temperature + settings.temperature_rise_per_move,
+        )
 
     def set_grid(self, grid: list[list[int]]) -> None:
         """更新地图引用（地图被编辑后调用）。"""
@@ -88,15 +103,26 @@ class SensorSimulator:
 
     def read_temperature(self, is_moving: bool) -> float:
         """
-        读取机身温度：基线温度 + 运动温升 + 高斯噪声。
+        读取机身温度：基线 + 运动累积温升 - 静止散热 + 高斯噪声。
+
+        V2.0 采用有状态模型：移动时按 tick 累加温升，静止时缓慢散热，
+        温度被 clamp 在 [基线, 上限] 区间内，因此长时间巡检可以真实触发
+        过热告警，停机散热后也能恢复。
 
         :param is_moving: 机器人当前是否在移动。
         :return: 温度读数（摄氏度，保留一位小数）。
         """
-        rise = config.settings.temperature_rise_per_move if is_moving else 0.0
-        noise = random.gauss(0, config.settings.temperature_noise * 0.3)
-        value = config.settings.base_temperature + rise + noise
-        return round(value, 1)
+        settings = config.settings
+        if is_moving:
+            self.temperature += settings.temperature_rise_per_move
+        else:
+            self.temperature -= settings.temperature_cool_rate
+        self.temperature = min(
+            settings.temperature_max,
+            max(settings.base_temperature, self.temperature),
+        )
+        noise = random.gauss(0, settings.temperature_noise * 0.3)
+        return round(self.temperature + noise, 1)
 
     def _inject_fault(self, readings: dict) -> None:
         """
