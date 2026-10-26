@@ -19,7 +19,7 @@
 
     <!-- 告警 Toast（V2.0）：改为悬浮层，不占文档流，弹出时地图不会被顶下去 -->
     <div
-      class="fixed top-14 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 w-[calc(100%-1rem)] max-w-sm pointer-events-none"
+      class="fixed top-[4.5rem] left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 w-[calc(100%-1rem)] max-w-sm pointer-events-none"
     >
       <TransitionGroup name="toast">
         <div
