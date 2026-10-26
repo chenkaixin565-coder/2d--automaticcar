@@ -30,3 +30,4 @@ frontend/_debug.mjs
 frontend/_verify2.mjs
 push_via_api.py
 .commit-msg
+push_api2.py

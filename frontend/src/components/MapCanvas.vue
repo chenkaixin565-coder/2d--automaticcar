@@ -20,7 +20,10 @@
     >
       ⤢ 适配地图
     </button>
-    <div class="absolute top-12 left-3 px-2 py-1 text-xs rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300">
+    <div
+      v-if="editMode !== 'nav'"
+      class="absolute bottom-3 left-14 px-2 py-1 text-xs rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 pointer-events-none whitespace-nowrap"
+    >
       {{ editModeLabel }}
     </div>
     <div class="absolute bottom-3 right-3 px-2 py-1 text-xs rounded-md bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400">
@@ -745,7 +748,7 @@ function drawRobot(ctx, state, isGhost) {
   const cx = (state.x + 0.5) * CELL_PIXELS
   const cy = (state.y + 0.5) * CELL_PIXELS
   // 缩得很小时按屏幕像素兜底，保证仍能辨认出机器人
-  const size = Math.max(CELL_PIXELS * 0.8, 16 / props.scale)
+  const size = Math.max(CELL_PIXELS * 0.9, 18 / props.scale)
   const theta = state.theta || 0
   const alpha = isGhost ? 0.45 : 1
 
@@ -761,7 +764,7 @@ function drawRobot(ctx, state, isGhost) {
     return
   }
 
-  const body = size * 0.62
+  const body = size * 0.66
   ctx.globalAlpha = alpha
 
   // 阴影，让机器人从栅格里"浮"起来
