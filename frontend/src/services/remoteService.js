@@ -790,8 +790,10 @@ export class RemoteService extends RobotService {
     const frame = {
       type: 'state',
       data: {
-        x: this._state.x, y: this._state.y, theta: this._state.theta,
-        battery: this._state.battery, speed: this._state.speed, mode: this._state.mode,
+        // V2.3.5：整帧透传，保留 patrol / blocked / pending / trail_len 等字段。
+        // 之前这里手工只挑了 8 个字段，导致后端模式下列表收不到 stopped 状态：
+        // "巡检遇阻"弹窗刚弹出就被下一帧按 null 关掉，"待清障"计数也永远是 0。
+        ...this._state,
         path: (this._state.path || []).map((p) => [...p]),
         sensors: { ...this._state.sensors },
         plan: this._state.plan || null,
