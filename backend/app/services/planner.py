@@ -132,6 +132,8 @@ def build_plan(
         "reachable": False,
         "enough": False,
         "message": "无法规划路线：目标不可达",
+        # V2.3.1：不可达时由 engine 填入"拆这一格能通"的建议坐标。
+        "suggestion": None,
     }
     if not result["path"]:
         return base

@@ -103,3 +103,18 @@ class AgentCommand(BaseModel):
 
     text: str = Field(..., min_length=1, max_length=200, description="用户指令原文")
     confirm: bool = Field(False, description="破坏性操作二次确认：True 才真正执行")
+
+
+class AvatarCommand(BaseModel):
+    """机器人自定义形象（V2.3.1）。
+
+    图片以 data URL 形式提交，服务端保存后所有客户端按版本号同步；
+    清除形象走 DELETE /api/v1/robot/avatar。
+    """
+
+    data_url: str = Field(
+        ...,
+        min_length=32,
+        max_length=3_000_000,
+        description="图片 data URL（data:image/...;base64,...）",
+    )

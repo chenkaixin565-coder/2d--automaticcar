@@ -14,22 +14,31 @@
               <path d="M12 9v4M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
             </svg>
           </span>
-          <h3 id="blocked-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">巡检受阻</h3>
+          <h3 id="blocked-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">
+            {{ isUnreachable ? '无法到达巡检点' : '巡检受阻' }}
+          </h3>
         </div>
 
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
-          机器人已停在障碍前一格<span v-if="cell">（前方 <span class="font-mono">[{{ cell[0] }}, {{ cell[1] }}]</span>）</span>，
-          需要你决定怎么处理。
+          <template v-if="isUnreachable">
+            到巡检点 <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span> 没有可行路线，
+            机器人停在原地等你决定。
+          </template>
+          <template v-else>
+            机器人已停在障碍前一格<span v-if="cell">（前方 <span class="font-mono">[{{ cell[0] }}, {{ cell[1] }}]</span>）</span>，
+            需要你决定怎么处理。
+          </template>
         </p>
 
         <ul class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
-          <li>· 清除：扣 5% 电量，原地清除后继续巡检</li>
+          <li v-if="isUnreachable">· 清除：扣 5% 电量拆掉 <span v-if="cell" class="font-mono">[{{ cell[0] }}, {{ cell[1] }}]</span>，重新规划后继续</li>
+          <li v-else>· 清除：扣 5% 电量，原地清除后继续巡检</li>
           <li>· 跳过：保留障碍并记入"待清障"，跳过当前巡检点</li>
           <li>· 停止：结束本次巡检，回到手动模式</li>
         </ul>
 
         <p class="mt-2 text-xs" :class="battery < clearCost ? 'text-red-500' : 'text-gray-400 dark:text-gray-500'">
-          当前电量 {{ battery.toFixed(1) }}%{{ battery < clearCost ? '，不足 5%，无法清除' : '' }}
+          当前电量 {{ battery.toFixed(1) }}%{{ battery < clearCost ? `，不足 ${clearCost}%，无法清除` : '' }}
         </p>
 
         <div class="mt-4 flex flex-col gap-2">
@@ -39,7 +48,7 @@
             :disabled="battery < clearCost"
             @click="$emit('decide', 'clear')"
           >
-            清除此处障碍（-5%）并继续
+            清除{{ isUnreachable ? '该障碍并重新规划' : '此处障碍' }}（-{{ clearCost }}%）并继续
           </button>
           <button
             type="button"
@@ -74,12 +83,24 @@
  *   stop  = 结束本次巡检
  */
 
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   visible: {
     type: Boolean,
     default: false,
   },
   cell: {
+    type: Array,
+    default: null,
+  },
+  /** 阻碍原因：obstacle / barrier / unreachable（V2.3.1）。 */
+  reason: {
+    type: String,
+    default: '',
+  },
+  /** 不可达时的目标巡检点坐标（V2.3.1）。 */
+  goal: {
     type: Array,
     default: null,
   },
@@ -92,6 +113,9 @@ defineProps({
     default: 5,
   },
 })
+
+/** 目标完全不可达时换一套文案：不是"前方挡路"，而是"整条路被封死"。 */
+const isUnreachable = computed(() => props.reason === 'unreachable')
 
 defineEmits(['decide'])
 </script>

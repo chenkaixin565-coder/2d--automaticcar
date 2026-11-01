@@ -1,6 +1,6 @@
 # 接口文档（REST + WebSocket）
 
-> 适用版本：**V2.3.0**
+> 适用版本：**V2.3.1**
 > 整理依据：`backend/app/api/rest.py` 与 `websocket.py` 的实际实现；接口有变动时以代码为准。
 > 在线可交互版：`https://irm-sim-2d.onrender.com/docs`
 
@@ -130,6 +130,9 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 | GET | `/api/v1/robot/pending` | 待清障记录 | 否 |
 | POST | `/api/v1/robot/carry-home` | 空电后搬回起点 | 是 |
 | POST | `/api/v1/robot/charge` | 主动返回充电点（V2.3.0） | 是 |
+| GET | `/api/v1/robot/avatar` | 获取自定义形象与版本号（V2.3.1） | 否 |
+| PUT | `/api/v1/robot/avatar` | 上传自定义形象（data URL），广播 `avatar` 帧（V2.3.1） | 是 |
+| DELETE | `/api/v1/robot/avatar` | 恢复默认形象（V2.3.1） | 是 |
 | GET | `/api/v1/robot/trail` | 已走过的轨迹，返回 `{"trail": [[x,y], ...]}` | 否 |
 
 移动请求 `dx/dy` 取值 **-1 / 0 / 1**。响应为机器人状态：
@@ -275,7 +278,8 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 | `auth_state` | 连接时一次 | `{can_control, readonly, auth_mode}` |
 | `anomaly` | 事件触发 | 异常事件 |
 | `notice` | 事件触发 | 操作提示（规划完成、清障成功等） |
-| `blocked` | 事件触发 | 巡检遇阻，带 `cell / message / battery / clear_cost` |
+| `blocked` | 事件触发 | 巡检遇阻（V2.3.1 增加 `reason`：`obstacle` / `barrier` / `unreachable`，不可达时带 `goal`），含 `cell / message / battery / clear_cost` |
+| `avatar` | 形象变更 | 只带 `version`，客户端据此去 `GET /robot/avatar` 拉图（V2.3.1） |
 | `empty` | 事件触发 | 电量耗尽 |
 | `agent` | 指令执行后 | Agent 执行结果（字段同第 10 节返回体） |
 | `auth_required` | 指令被拒时 | `{code, readonly, message}`，前端据此弹密钥框 |
@@ -366,6 +370,7 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 
 | 版本 | 变更 |
 |---|---|
+| V2.3.1 | 新增 `/robot/avatar` 三件套与 `avatar` 帧；`blocked` 帧增加 `reason`/`goal`；Agent 支持「第 N 号巡检点」；开始巡检会静默作废预览 |
 | V2.3.0 | 新增 `/agent/command`、`/agent/tools`、`/robot/charge`；`/path` 改八邻域并返回 `reachable` / `error`；新增 `agent` 帧与 `go_charge` 指令 |
 | V2.2.1 | WS 支持只读接入；新增 `auth_state` 帧；指令级鉴权 |
 | V2.2.0 | 新增操作密钥、限流、`/metrics`、共享规则 |

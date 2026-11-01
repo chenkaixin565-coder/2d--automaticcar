@@ -66,6 +66,10 @@ export class RemoteService extends RobotService {
     this._snapshots = []
     this._visitedTrail = [[0, 0]]
     this._lastPos = { x: 0, y: 0 }
+    /** 服务端形象版本（V2.3.1）：-1 表示尚未同步，收到 state 帧后按需拉取。 */
+    this._avatarVersion = -1
+    /** 最近一次拉取到的形象 data URL。 */
+    this._avatar = null
 
     // 暴露给调试与自动化脚本
     if (typeof window !== 'undefined') {
@@ -139,6 +143,13 @@ export class RemoteService extends RobotService {
       if (frame.data.patrol) this._patrol = frame.data.patrol
       this._trackTrail(frame.data)
       this._recordSnapshot(frame.data)
+      // V2.3.1：服务端形象版本变化时才去拉图，避免每帧传大图。
+      if (
+        frame.data.avatar_version !== undefined &&
+        frame.data.avatar_version !== this._avatarVersion
+      ) {
+        this._syncAvatar(frame.data.avatar_version)
+      }
       this._emitState()
     } else if (frame.type === 'anomaly') {
       this._anomalies.unshift(frame.data)
@@ -147,6 +158,9 @@ export class RemoteService extends RobotService {
     } else if (frame.type === 'blocked') {
       // 巡检遇阻：交给界面弹窗询问是否清障（V2.0）。
       this._emitEvent('blocked', frame.data)
+    } else if (frame.type === 'avatar') {
+      // 别的客户端换了形象：按版本号重新拉取。
+      this._syncAvatar(frame.data && frame.data.version)
     } else if (frame.type === 'empty') {
       this._emitEvent('empty', frame.data)
     } else if (frame.type === 'auth_state') {
@@ -172,8 +186,7 @@ export class RemoteService extends RobotService {
   /**
    * 拉取传感器与异常数据以刷新缓存（地图以客户端为准，不覆盖）。
    */
-  async _fetchInitial() {
-    try {
+  async _fetchInitial() {    try {
       const sensors = await this._rest('GET', '/api/v1/sensors/latest')
       if (sensors) this._state.sensors = sensors
       const anomalies = await this._rest('GET', '/api/v1/events/anomalies')
@@ -552,6 +565,55 @@ export class RemoteService extends RobotService {
    */
   getState() {
     return this._state
+  }
+
+  /**
+   * 按版本号拉取服务端形象并广播给界面（V2.3.1）。
+   *
+   * @param {number} version - 服务端形象版本。
+   */
+  async _syncAvatar(version) {
+    if (typeof version === 'number') this._avatarVersion = version
+    try {
+      const data = await this._rest('GET', '/api/v1/robot/avatar')
+      this._avatar = (data && data.data_url) || null
+      if (data && typeof data.version === 'number') this._avatarVersion = data.version
+      this._emitEvent('avatar', { data_url: this._avatar, version: this._avatarVersion })
+    } catch (error) {
+      console.warn('形象同步失败：', error)
+    }
+  }
+
+  /**
+   * 读取服务端当前形象（无自定义形象时返回 null）。
+   * @returns {Promise<string|null>} data URL。
+   */
+  async getAvatar() {
+    await this._syncAvatar(this._avatarVersion)
+    return this._avatar
+  }
+
+  /**
+   * 上传自定义形象（V2.3.1），成功后所有客户端按版本号同步。
+   * @param {string} dataUrl - 图片 data URL。
+   * @returns {Promise<string|null>} 服务端确认后的 data URL。
+   */
+  async uploadAvatar(dataUrl) {
+    const data = await this._rest('PUT', '/api/v1/robot/avatar', { data_url: dataUrl })
+    this._avatar = (data && data.data_url) || null
+    if (data && typeof data.version === 'number') this._avatarVersion = data.version
+    return this._avatar
+  }
+
+  /**
+   * 清除自定义形象，恢复默认绘制（V2.3.1）。
+   * @returns {Promise<null>}
+   */
+  async removeAvatar() {
+    const data = await this._rest('DELETE', '/api/v1/robot/avatar')
+    this._avatar = (data && data.data_url) || null
+    if (data && typeof data.version === 'number') this._avatarVersion = data.version
+    return this._avatar
   }
 
   /**

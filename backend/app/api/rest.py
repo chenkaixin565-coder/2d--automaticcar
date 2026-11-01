@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.models.map import GridMap
 from app.models.robot import (
     AgentCommand,
+    AvatarCommand,
     CellEditCommand,
     ClearObstacleCommand,
     MapSaveCommand,
@@ -303,6 +304,31 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
     async def robot_charge() -> dict:
         """让机器人主动规划回充电点的路线（V2.3.0，Agent「去充电」工具）。"""
         return engine.go_charge()
+
+    @router.get("/robot/avatar", summary="获取机器人自定义形象")
+    async def get_avatar() -> dict:
+        """返回当前形象 data URL 与版本号；无自定义形象时 data_url 为 null（V2.3.1）。"""
+        return engine.get_avatar()
+
+    @router.put("/robot/avatar", summary="设置机器人自定义形象")
+    async def set_avatar(command: AvatarCommand) -> dict:
+        """
+        上传图片 data URL（V2.3.1）。
+
+        服务端保存后广播 avatar 帧，所有客户端按版本号重新拉取，实现多端同步。
+
+        :param command: {'data_url': 'data:image/...;base64,...'}。
+        :return: {'data_url', 'version'}；非法图片返回 422。
+        """
+        try:
+            return engine.set_avatar(command.data_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.delete("/robot/avatar", summary="恢复默认机器人形象")
+    async def delete_avatar() -> dict:
+        """清除自定义形象并广播版本变更（V2.3.1）。"""
+        return engine.set_avatar(None)
 
     @router.get("/robot/trail", summary="获取机器人轨迹")
     async def robot_trail() -> dict:

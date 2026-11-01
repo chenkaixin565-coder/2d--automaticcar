@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.3.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.3.1</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -238,6 +238,7 @@
       :plan="routePlan"
       :battery="robot.battery"
       @start="onPlanStart"
+      @clear-suggestion="onPlanClearSuggestion"
       @cancel="onPlanCancel"
     />
 
@@ -273,6 +274,8 @@
     <ObstacleDialog
       :visible="!!blockedCell"
       :cell="blockedCell ? blockedCell.cell : null"
+      :reason="blockedCell ? blockedCell.reason : ''"
+      :goal="blockedCell ? blockedCell.goal : null"
       :battery="robot.battery"
       :clear-cost="5"
       @decide="onBlockedDecision"
@@ -509,7 +512,13 @@ onMounted(() => {
     // 远程模式下 patrol 由 state 帧携带；本地模式直接读服务
     patrolStatus.value = frame.data.patrol || service.getPatrolStatus()
     pendingCells.value = frame.data.pending || []
-    blockedCell.value = frame.data.blocked ? { cell: frame.data.blocked.cell } : null
+    blockedCell.value = frame.data.blocked
+      ? {
+          cell: frame.data.blocked.cell,
+          reason: frame.data.blocked.reason || 'obstacle',
+          goal: frame.data.blocked.goal || null,
+        }
+      : null
     if (showTemperature.value) {
       temperatureHistory.value.push(frame.data.sensors.temperature)
       if (temperatureHistory.value.length > 300) {
@@ -534,8 +543,17 @@ onMounted(() => {
       addToast(frame.data.type, frame.data.message)
     } else if (frame.type === 'blocked') {
       // 巡检遇阻：弹出三选一对话框（清除 / 跳过记录 / 停止）
-      blockedCell.value = { cell: frame.data.cell }
+      blockedCell.value = {
+        cell: frame.data.cell,
+        reason: frame.data.reason || 'obstacle',
+        goal: frame.data.goal || null,
+      }
       addToast('stuck', frame.data.message)
+    } else if (frame.type === 'avatar') {
+      // 形象同步（V2.3.1）：别的设备换图后，本端按事件里的 data_url 更新
+      if (frame.data && typeof frame.data.data_url !== 'undefined') {
+        robotAvatar.value = frame.data.data_url || null
+      }
     } else if (frame.type === 'empty') {
       showEmptyModal.value = true
     } else if (frame.type === 'auth_required') {
@@ -563,6 +581,12 @@ onMounted(() => {
       Object.assign(map, serverMap)
       fitMap()
     })
+    // V2.3.1：连上后端后拉一次服务端形象，多端保持一致
+    if (typeof service.getAvatar === 'function') {
+      service.getAvatar().then((url) => {
+        if (url) robotAvatar.value = url
+      }).catch(() => {})
+    }
   }
 })
 
@@ -757,10 +781,8 @@ function handleKeyDown(event) {
 // --------------------------------------------------------------------------
 
 function onStartPatrol() {
-  if (routePlan.value) {
-    onPlanStart()
-    return
-  }
+  // V2.3.1：顶部的「开始巡检」始终按地图上的巡检点做全图任务；
+  // 只去某一个点请用路线预览卡里的「前往该点」。
   service.startPatrol(map.goals)
 }
 
@@ -876,20 +898,32 @@ watch(
   }
 )
 
-/** 按预览路线开始巡检：把预览目标排到第一位，并收起预览。 */
-function onPlanStart() {
+/** 按预览路线开始巡检：只去预览的那个点，并收起预览。 */
+function onPlanStart(payload) {
   const plan = routePlan.value
-  const goals = map.goals.map((g) => [g[0], g[1]])
-  if (plan && plan.goal) {
-    const index = goals.findIndex((g) => g[0] === plan.goal[0] && g[1] === plan.goal[1])
-    if (index > 0) {
-      const [target] = goals.splice(index, 1)
-      goals.unshift(target)
-    }
-  }
+  if (!plan || !plan.goal) return
+  const mode = (payload && payload.mode) || 'direct'
+  const goal = [plan.goal[0], plan.goal[1]]
   keepViewOnPlanEnd = true
-  service.startPatrol(goals)
-  service.cancelPlan()
+  if (mode === 'clear' && plan.clearable.length > 0) {
+    // 先按预算清掉路线上的障碍，再出发；清完的路径就是预览里那条直线。
+    service.executePlanClear()
+  }
+  // V2.3.1：按此路线 = 只巡这一个点。以前这里把整张图的巡检点全排进去，
+  // 点完会变成"全图自动巡检"，还会因为 cancelPlan 弹一句"路线规划已取消"。
+  service.startPatrol([goal])
+}
+
+/**
+ * 不可达时点击"清除 [x,y] 并重新规划"（V2.3.1）。
+ *
+ * @param {number[]} cell - 建议拆除的障碍坐标。
+ */
+function onPlanClearSuggestion(cell) {
+  const goal = routePlan.value && routePlan.value.goal ? [...routePlan.value.goal] : null
+  if (!cell || !goal) return
+  service.clearObstacleAt(cell)
+  service.planRoute(goal)
 }
 
 /** 取消预览：清掉闪烁虚线与标记。 */
@@ -1212,20 +1246,31 @@ function onImportError(message) {
 /**
  * 更换机器人形象：dataUrl 为 null 表示恢复默认矢量绘制。
  *
+ * V2.3.1：除了写入本地缓存，还会同步到后端（在线模式），
+ * 这样手机和电脑看到的是同一张图。
+ *
  * @param {string|null} dataUrl - 图片 data URL 或 null。
  */
-function onAvatarChange(dataUrl) {
+async function onAvatarChange(dataUrl) {
   if (dataUrl) {
-    if (!setAvatar(dataUrl)) {
-      addToast('notice', '形象保存失败：本地存储空间不足')
-      return
+    setAvatar(dataUrl)
+    try {
+      if (typeof service.uploadAvatar === 'function') await service.uploadAvatar(dataUrl)
+      addToast('notice', usingBackend.value ? '机器人形象已更新，并同步到所有设备' : '机器人形象已更新')
+    } catch (error) {
+      console.warn('形象同步失败：', error)
+      addToast('notice', '形象已保存到本机，但同步到服务器失败')
     }
-    addToast('notice', '机器人形象已更新')
   } else {
     clearAvatar()
+    try {
+      if (typeof service.removeAvatar === 'function') await service.removeAvatar()
+    } catch (error) {
+      console.warn('清除服务端形象失败：', error)
+    }
     addToast('notice', '已恢复默认机器人形象')
   }
-  robotAvatar.value = getAvatar()
+  robotAvatar.value = getAvatar() || null
 }
 
 /**

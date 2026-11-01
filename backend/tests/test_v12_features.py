@@ -89,13 +89,18 @@ def test_plan_route_crosses_obstacles():
 
 
 def test_plan_route_refuses_boundary_goal():
-    """目标位于边界墙上时不可规划。"""
+    """目标位于边界墙上时不可规划。
+
+    V2.3.1：失败结果也保留在 engine.plan 里，前端据此显示"不可达"面板并提供
+    清障建议；边界墙无法靠拆一格解决，所以 suggestion 为 None。
+    """
     engine = make_engine()
     plan = engine.plan_route([0, 2])
     assert plan["path"] == []
     assert plan["reachable"] is False
     assert plan["message"]
-    assert engine.plan is None
+    assert engine.plan is not None
+    assert engine.plan["suggestion"] is None
 
 
 def test_plan_route_budget_truncates_clearable():

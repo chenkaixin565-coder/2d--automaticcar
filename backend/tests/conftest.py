@@ -20,3 +20,8 @@ os.environ.setdefault("AGENT_LLM_ENABLED", "false")
 # 默认开放演示模式（各安全用例会自行 monkeypatch 配置）。
 os.environ.setdefault("OPERATOR_KEY", "")
 os.environ.setdefault("READONLY_MODE", "false")
+# 单线程跑数值库：跑全量用例时多线程 BLAS 会互相抢核，把"单次推理 <5ms"
+# 这类计时断言拖慢到误报；固定 1 线程同时也让 CI 上的耗时更稳定。
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")

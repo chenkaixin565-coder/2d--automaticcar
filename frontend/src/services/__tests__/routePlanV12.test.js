@@ -125,10 +125,12 @@ describe('SimulatedService 一键规划路线', () => {
     expect(frame.data.plan).toBe(plan)
   })
 
-  it('目标不可达时应作废规划并提示', () => {
+  it('目标不可达时保留规划结果并给出不可达状态', () => {
+    // V2.3.1：失败结果不再丢弃，预览卡要用它显示"不可达 + 清障建议"。
     const plan = service.planRoute([0, 2])
     expect(plan.path).toEqual([])
-    expect(service._plan).toBeNull()
+    expect(service._plan).toEqual(plan)
+    expect(plan.suggestion).toBeNull() // 边界墙无法靠拆一格解决
   })
 
   it('cancelPlan 应作废规划', () => {

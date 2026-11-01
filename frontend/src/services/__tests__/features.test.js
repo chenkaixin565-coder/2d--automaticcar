@@ -48,7 +48,7 @@ describe('一键排障 resolveFault', () => {
     const before = JSON.stringify(service._map.grid)
     service.resolveFault()
     const notices = events.filter((f) => f.type === 'notice')
-    expect(notices[notices.length - 1].data.message).toContain('当前无阻塞故障')
+    expect(notices[notices.length - 1].data.message).toContain('当前没有需要排除的障碍')
     expect(JSON.stringify(service._map.grid)).toBe(before)
   })
 

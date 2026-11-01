@@ -45,6 +45,8 @@ const MODE_LABELS = {
 
 const COORD_RE = /(\d{1,3})\s*[,，、xX×]\s*(\d{1,3})/g
 const GRID_RE = /(\d{1,2})\s*[xX×*]\s*(\d{1,2})/
+// 巡检点序号："3 号巡检点" / "第 3 个巡检点"（V2.3.1）
+const GOAL_INDEX_RE = /(?:第\s*)?(\d{1,2})\s*(?:号|个|#)\s*(?:巡检点|点|目标)/
 
 const STOP_WORDS = ['停止', '停下', '停住', '别走', '别动', '取消巡检', '停止巡检', 'stop']
 const STATUS_WORDS = ['状态', '电量', '多少电', '在哪', '位置', '报告', '情况', '怎么样']
@@ -111,6 +113,17 @@ function extractCoords(text) {
 }
 
 /**
+ * 提取"第几个巡检点"的序号（从 1 开始）。
+ *
+ * @param {string} text - 归一化后的文本。
+ * @returns {number|null} 序号。
+ */
+function extractGoalIndex(text) {
+  const match = GOAL_INDEX_RE.exec(text)
+  return match ? Number(match[1]) : null
+}
+
+/**
  * 内置中文规则解析（与后端 parse_rules 同一套意图与优先级）。
  *
  * @param {string} text - 用户输入。
@@ -120,6 +133,7 @@ function extractCoords(text) {
 export function parseRules(text, heading = [1, 0]) {
   const normalized = normalize(text)
   const coords = extractCoords(normalized)
+  const goalIndex = extractGoalIndex(normalized)
 
   if (has(normalized, STOP_WORDS)) return { tool: 'stop_patrol', args: {}, reason: '停止巡检' }
   if (has(normalized, STATUS_WORDS)) return { tool: 'status', args: {}, reason: '查询状态' }
@@ -127,11 +141,23 @@ export function parseRules(text, heading = [1, 0]) {
   if (has(normalized, CLEAR_WORDS) && coords.length > 0) {
     return { tool: 'clear_obstacle', args: { cell: coords[0] }, reason: '清除障碍' }
   }
-  if (has(normalized, PATROL_WORDS)) {
-    return { tool: 'start_patrol', args: coords.length ? { goals: coords } : {}, reason: '开始巡检' }
+
+  // 规划意图先于巡检判断："规划到 3 号巡检点"里也含"巡检"二字。
+  if (has(normalized, PLAN_WORDS)) {
+    if (coords.length > 0) return { tool: 'plan_route', args: { goal: coords[0] }, reason: '规划路线' }
+    if (goalIndex !== null) {
+      return { tool: 'plan_route', args: { goal_index: goalIndex }, reason: '规划到指定巡检点' }
+    }
   }
-  if (has(normalized, PLAN_WORDS) && coords.length > 0) {
-    return { tool: 'plan_route', args: { goal: coords[0] }, reason: '规划路线' }
+
+  if (has(normalized, PATROL_WORDS)) {
+    if (coords.length > 0) {
+      return { tool: 'start_patrol', args: { goals: coords }, reason: '开始巡检' }
+    }
+    if (goalIndex !== null) {
+      return { tool: 'start_patrol', args: { goal_index: goalIndex }, reason: '前往指定巡检点' }
+    }
+    return { tool: 'start_patrol', args: {}, reason: '开始巡检' }
   }
   if (has(normalized, RESET_WORDS)) return { tool: 'reset', args: {}, reason: '复位' }
 
@@ -204,6 +230,26 @@ function asCell(value, field) {
 }
 
 /**
+ * 解析目标：支持坐标，也支持"第 N 号巡检点"（V2.3.1）。
+ *
+ * @param {Object} args - { goal } 或 { goal_index }。
+ * @param {Object} map - 地图对象（含 goals）。
+ * @returns {number[]} 目标坐标 [x, y]。
+ */
+function resolveGoal(args, map) {
+  if (args.goal_index !== undefined && args.goal_index !== null) {
+    const index = asInt(args.goal_index, 'goal_index')
+    const goals = map.goals || []
+    if (index < 1 || index > goals.length) {
+      throw new AgentError(`没有第 ${index} 号巡检点（当前共 ${goals.length} 个，序号从 1 开始）`)
+    }
+    const goal = goals[index - 1]
+    return [Number(goal[0]), Number(goal[1])]
+  }
+  return asCell(args.goal, 'goal')
+}
+
+/**
  * 执行前校验工具与参数（白名单 + schema + 业务语义）。
  *
  * @param {string} tool - 工具名。
@@ -242,7 +288,7 @@ export function validateCall(tool, args, context) {
   }
 
   if (tool === 'plan_route') {
-    const goal = asCell(args.goal, 'goal')
+    const goal = resolveGoal(args, map)
     if (!inBounds(goal[0], goal[1])) throw new AgentError(`目标点 [${goal[0]}, ${goal[1]}] 在地图之外`)
     if (map.grid[goal[1]][goal[0]] === 2) {
       throw new AgentError(`目标点 [${goal[0]}, ${goal[1]}] 是固定屏障，无法到达`)
@@ -251,6 +297,11 @@ export function validateCall(tool, args, context) {
   }
 
   if (tool === 'start_patrol') {
+    if (args.goal_index !== undefined && args.goal_index !== null) {
+      const goal = resolveGoal(args, map)
+      if (!isFree(goal[0], goal[1])) throw new AgentError(`巡检点 [${goal[0]}, ${goal[1]}] 是障碍或屏障`)
+      return { goals: [goal] }
+    }
     const raw = args.goals
     if (raw === undefined || raw === null || (Array.isArray(raw) && raw.length === 0)) return {}
     if (!Array.isArray(raw)) throw new AgentError('巡检点必须是坐标数组')
@@ -335,7 +386,10 @@ async function executeTool(tool, args, service, map) {
   if (tool === 'plan_route') {
     const plan = service.planRoute(args.goal)
     if (!plan || !plan.path || plan.path.length === 0) {
-      return { ok: false, message: `到 [${args.goal[0]}, ${args.goal[1]}] 没有可行路线。`, result: plan }
+      const hint = plan && plan.suggestion
+        ? `到 [${args.goal[0]}, ${args.goal[1]}] 没有可行路线；建议清除 [${plan.suggestion[0]}, ${plan.suggestion[1]}] 后重试。`
+        : `到 [${args.goal[0]}, ${args.goal[1]}] 没有可行路线。`
+      return { ok: false, message: hint, result: plan }
     }
     const steps = Math.max(0, plan.path.length - 1)
     const message = plan.enough
@@ -348,6 +402,14 @@ async function executeTool(tool, args, service, map) {
     service.startPatrol(args.goals)
     const status = service.getPatrolStatus()
     if (!status.running) return { ok: false, message: '当前无法开始巡检（可能电量为空或没有巡检点）。', result: status }
+    if (status.total === 1 && status.current_goal) {
+      const goal = status.current_goal
+      return {
+        ok: true,
+        message: `已出发前往巡检点 [${goal[0]}, ${goal[1]}]（单点任务）。`,
+        result: status,
+      }
+    }
     return { ok: true, message: `自动巡检已启动，共 ${status.total} 个巡检点，机器人开始逐点前往。`, result: status }
   }
 

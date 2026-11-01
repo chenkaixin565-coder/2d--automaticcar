@@ -1,6 +1,7 @@
-# 智能巡检机器人二维仿真系统 V2.3.0
+# 智能巡检机器人二维仿真系统 V2.3.1
 
 > 大学生社团培训班结业项目 —— 全栈版（FastAPI 后端 + Vue 前端，单容器部署）。
+> V2.3.1 修了一轮"按钮点了没反应 / 反应不对"的交互问题：按预览路线只去那一个点、不再误报"规划已取消"、不可达时给清障建议、一键排障三种场景都生效、机器人形象多端同步。
 > V2.3.0 加了「自然语言 Agent」：说一句话就能让机器人规划、巡检、回充、清障，并支持可选接入本地大模型（Ollama）；同时把 A* 升级为八邻域 + 视线法平滑，异常检测默认改为「有依赖就用机器学习」。
 > V2.0 重做了交互（规划=预览 / 遇阻=暂停询问 / 尾迹可隐藏）并修复 22 项一致性缺陷；V2.1 增加地图库、地图设计器与固定屏障，并把"清障"拆成免费的编辑擦除与扣电的机器人清障；V2.1.1 修掉预览缩放过大、关闭预览后视角卡在角落，并把地图库入口补到移动端。
 
@@ -11,6 +12,17 @@
 前端为 Vue 3 + Canvas，后端为 FastAPI（仿真引擎、A*、传感器、异常检测、巡检调度、Agent 指令层），后端同时托管前端静态页，**一个容器即可完整运行**。
 
 ## 功能特性
+
+### V2.3.1 修复（交互一致性）
+
+- **「按此路线巡检」只去那一个点**：不再把全图巡检点都排进任务；提示改为"已出发前往巡检点 [x, y]，单点任务"
+- **不再误报"路线规划已取消"**：开始巡检会在服务端静默作废预览，不再多推一条取消通知
+- **「去 2 号巡检点」能听懂了**：Agent 支持"第 N 号巡检点"，按序号换算坐标，越界会回"当前共 N 个"
+- **不可达时给清障选择**：巡检点被围死时暂停弹窗，建议清除某一格后重试，而不是静默跳过；规划失败也会给"拆哪一格能通"的建议
+- **一键排障三种场景都生效**：手动撞墙（免费）/ 巡检受阻（扣 5%，继续巡检）/ 有路线预览（按规划批量清障）
+- **预览与执行语义一致**：预览卡给出「清除 N 处并前往」和「绕过障碍直接前往」两种明确选择，不再"画着穿墙、实际绕行"
+- **机器人形象多端同步**：`GET/PUT/DELETE /api/v1/robot/avatar`，形象版本随状态帧下发，手机和电脑看到同一张图
+- **前后端规划口径统一**：前端穿障规划同步为八邻域 + √2 代价，同一路线两端算出的耗电一致
 
 ### V2.3.0 新增（自然语言 Agent + 八邻域 A*）
 
@@ -115,7 +127,7 @@ graph TD
 - 实时通信：WebSocket（状态帧 200ms、异常/通知/Agent 事件帧）
 - 规则来源：`shared/simulation-rules.json` + `shared/default-map.json`（前后端共用）
 - 部署：Docker 多阶段构建（Node 构建前端 → Python 托管）+ docker-compose + Render 蓝图（`render.yaml` 一键公网部署）
-- 质量：后端 123 例 pytest + ruff、前端 89 例 vitest + eslint，GitHub Actions 三阶段流水线
+- 质量：后端 136 例 pytest + ruff、前端 96 例 vitest + eslint，GitHub Actions 三阶段流水线
 
 ## 快速开始
 
@@ -237,6 +249,9 @@ curl -X POST localhost:8000/api/v1/robot/move \
 | POST | `/api/v1/agent/command` | 自然语言指令：解析 → 校验 → 执行（V2.3.0） |
 | GET | `/api/v1/agent/tools` | Agent 工具白名单（V2.3.0） |
 | POST | `/api/v1/robot/charge` | 主动返回充电点（V2.3.0） |
+| GET | `/api/v1/robot/avatar` | 获取自定义形象与版本号（V2.3.1） |
+| PUT | `/api/v1/robot/avatar` | 上传自定义形象，多端同步（V2.3.1） |
+| DELETE | `/api/v1/robot/avatar` | 恢复默认形象（V2.3.1） |
 | GET | `/api/v1/sensors/latest` | 最新传感器读数 |
 | GET | `/api/v1/events/anomalies` | 异常事件列表 |
 | GET | `/api/v1/patrol/status` | 巡检任务状态 |
@@ -293,13 +308,13 @@ project-root/
 ## 测试
 
 ```bash
-# 后端：ruff 检查 + pytest（123 例）
+# 后端：ruff 检查 + pytest（136 例）
 cd backend
 pip install -r requirements-ml.txt pytest httpx ruff
 ruff check .
 pytest tests/ -v
 
-# 前端：lint + 单元测试（89 例）+ 构建
+# 前端：lint + 单元测试（96 例）+ 构建
 cd frontend
 npm ci
 npm run lint && npm test && npm run build

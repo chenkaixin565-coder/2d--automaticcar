@@ -301,4 +301,29 @@ export class RobotService {
   sendAgentCommand(_text, _confirm = false) {
     throw new Error('子类必须实现 sendAgentCommand 方法')
   }
+
+  /**
+   * 读取机器人自定义形象（V2.3.1）。
+   * @returns {Promise<string|null>} 图片 data URL；默认形象返回 null。
+   */
+  getAvatar() {
+    throw new Error('子类必须实现 getAvatar 方法')
+  }
+
+  /**
+   * 上传机器人自定义形象（V2.3.1）。
+   * @param {string} _dataUrl - 图片 data URL。
+   * @returns {Promise<string|null>} 保存后的 data URL。
+   */
+  uploadAvatar(_dataUrl) {
+    throw new Error('子类必须实现 uploadAvatar 方法')
+  }
+
+  /**
+   * 清除机器人自定义形象，恢复默认绘制（V2.3.1）。
+   * @returns {Promise<null>}
+   */
+  removeAvatar() {
+    throw new Error('子类必须实现 removeAvatar 方法')
+  }
 }

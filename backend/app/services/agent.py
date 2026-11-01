@@ -115,6 +115,8 @@ MODE_LABELS = {
 # 文本归一化后用于匹配的坐标：支持 "5,5" / "5，5" / "5、5" / "5x5" / "(5,5)"。
 _COORD_RE = re.compile(r"(\d{1,3})\s*[,，、xX×]\s*(\d{1,3})")
 _GRID_RE = re.compile(r"(\d{1,2})\s*[xX×*]\s*(\d{1,2})")
+# 巡检点序号："3 号巡检点" / "第 3 个巡检点" / "2#点"（V2.3.1）。
+_GOAL_INDEX_RE = re.compile(r"(?:第\s*)?(\d{1,2})\s*(?:号|个|#)\s*(?:巡检点|点|目标)")
 
 # 常见口语 → 意图关键词。顺序即优先级，先匹配到的先赢。
 _STOP_WORDS = ("停止", "停下", "停住", "别走", "别动", "取消巡检", "停止巡检", "stop")
@@ -164,6 +166,17 @@ def _extract_coords(text: str) -> list[list[int]]:
     return [[int(x), int(y)] for x, y in _COORD_RE.findall(text)]
 
 
+def _extract_goal_index(text: str) -> int | None:
+    """
+    提取"第几个巡检点"的序号（从 1 开始）。
+
+    :param text: 归一化后的文本。
+    :return: 序号；没有则返回 None。
+    """
+    match = _GOAL_INDEX_RE.search(text)
+    return int(match.group(1)) if match else None
+
+
 def parse_rules(text: str, heading: tuple[int, int] = (1, 0)) -> dict:
     """
     用内置中文规则把一句话解析成工具调用。
@@ -171,12 +184,16 @@ def parse_rules(text: str, heading: tuple[int, int] = (1, 0)) -> dict:
     这是"离线兜底"解析器：不联网、不确定、可预测。规则覆盖演示脚本里会用到的
     说法，识别不了就返回 understood=False，而不是猜一个动作去执行。
 
+    V2.3.1 新增"第 N 号巡检点"：把序号交给校验层换算成坐标，支持
+    "去 3 号巡检点""规划到第 2 个巡检点"。
+
     :param text: 归一化前的原始输入。
     :param heading: 机器人当前朝向对应的单位步长，用于解释"前进/后退"。
     :return: {'tool': str|None, 'args': dict, 'reason': str}。
     """
     normalized = _normalize(text)
     coords = _extract_coords(normalized)
+    goal_index = _extract_goal_index(normalized)
 
     if _has(normalized, _STOP_WORDS):
         return {"tool": "stop_patrol", "args": {}, "reason": "停止巡检"}
@@ -188,12 +205,23 @@ def parse_rules(text: str, heading: tuple[int, int] = (1, 0)) -> dict:
     if _has(normalized, _CLEAR_WORDS) and coords:
         return {"tool": "clear_obstacle", "args": {"cell": coords[0]}, "reason": "清除障碍"}
 
-    if _has(normalized, _PATROL_WORDS):
-        args = {"goals": coords} if coords else {}
-        return {"tool": "start_patrol", "args": args, "reason": "开始巡检"}
+    # 规划意图要先于巡检判断：\"规划到 3 号巡检点\"里也含"巡检"二字。
+    if _has(normalized, _PLAN_WORDS):
+        if coords:
+            return {"tool": "plan_route", "args": {"goal": coords[0]}, "reason": "规划路线"}
+        if goal_index is not None:
+            return {"tool": "plan_route", "args": {"goal_index": goal_index}, "reason": "规划到指定巡检点"}
 
-    if _has(normalized, _PLAN_WORDS) and coords:
-        return {"tool": "plan_route", "args": {"goal": coords[0]}, "reason": "规划路线"}
+    if _has(normalized, _PATROL_WORDS):
+        if coords:
+            return {"tool": "start_patrol", "args": {"goals": coords}, "reason": "开始巡检"}
+        if goal_index is not None:
+            return {
+                "tool": "start_patrol",
+                "args": {"goal_index": goal_index},
+                "reason": "前往指定巡检点",
+            }
+        return {"tool": "start_patrol", "args": {}, "reason": "开始巡检"}
 
     if _has(normalized, _RESET_WORDS):
         return {"tool": "reset", "args": {}, "reason": "复位"}
@@ -262,6 +290,27 @@ def _as_cell(value, field: str) -> tuple[int, int]:
     return _as_int(value[0], f"{field}.x"), _as_int(value[1], f"{field}.y")
 
 
+def _resolve_goal(args: dict, engine) -> tuple[int, int]:
+    """
+    解析目标：既支持直接给坐标，也支持"第 N 号巡检点"（V2.3.1）。
+
+    :param args: {'goal': [x,y]} 或 {'goal_index': n}。
+    :param engine: 仿真引擎，用于读取地图上的巡检点列表。
+    :return: 目标坐标 (x, y)。
+    :raises AgentError: 序号越界或缺少参数。
+    """
+    if args.get("goal_index") is not None:
+        index = _as_int(args["goal_index"], "goal_index")
+        goals = engine.map.goals
+        if not 1 <= index <= len(goals):
+            raise AgentError(
+                f"没有第 {index} 号巡检点（当前共 {len(goals)} 个，序号从 1 开始）"
+            )
+        goal = goals[index - 1]
+        return int(goal[0]), int(goal[1])
+    return _as_cell(args.get("goal"), "goal")
+
+
 def validate_call(tool: str, args: dict, engine) -> dict:
     """
     执行前校验工具与参数（白名单 + schema + 业务语义）。
@@ -299,7 +348,7 @@ def validate_call(tool: str, args: dict, engine) -> dict:
         return {"dx": dx, "dy": dy}
 
     if tool == "plan_route":
-        goal = _as_cell(args.get("goal"), "goal")
+        goal = _resolve_goal(args, engine)
         if not map_data.in_bounds(*goal):
             raise AgentError(f"目标点 [{goal[0]}, {goal[1]}] 在地图之外")
         if map_data.grid[goal[1]][goal[0]] == CELL_BARRIER:
@@ -307,6 +356,11 @@ def validate_call(tool: str, args: dict, engine) -> dict:
         return {"goal": list(goal)}
 
     if tool == "start_patrol":
+        if args.get("goal_index") is not None:
+            goal = _resolve_goal(args, engine)
+            if not map_data.is_free(*goal):
+                raise AgentError(f"巡检点 [{goal[0]}, {goal[1]}] 是障碍或屏障")
+            return {"goals": [list(goal)]}
         raw_goals = args.get("goals")
         if raw_goals in (None, [], {}):
             return {}
@@ -501,6 +555,14 @@ class AgentService:
             goal = args["goal"]
             plan = engine.plan_route(goal)
             if not plan["path"]:
+                suggestion = plan.get("suggestion")
+                if suggestion:
+                    return (
+                        False,
+                        f"到 [{goal[0]}, {goal[1]}] 没有可行路线；建议清除 "
+                        f"[{suggestion[0]}, {suggestion[1]}] 后重试。",
+                        plan,
+                    )
                 return False, f"到 [{goal[0]}, {goal[1]}] 没有可行路线。", plan
             steps = max(0, len(plan["path"]) - 1)
             if not plan["enough"]:
@@ -520,7 +582,11 @@ class AgentService:
             status = engine.start_patrol(args.get("goals"))
             if not status.get("running"):
                 return False, "当前无法开始巡检（可能电量为空或没有巡检点）。", status
-            message = f"自动巡检已启动，共 {status['total']} 个巡检点，机器人开始逐点前往。"
+            if status.get("total") == 1 and status.get("current_goal"):
+                goal = status["current_goal"]
+                message = f"已出发前往巡检点 [{goal[0]}, {goal[1]}]（单点任务）。"
+            else:
+                message = f"自动巡检已启动，共 {status['total']} 个巡检点，机器人开始逐点前往。"
             return True, message, status
 
         if tool == "stop_patrol":

@@ -52,6 +52,9 @@ from app.services.sensors import SensorSimulator
 
 logger = logging.getLogger("simulation.engine")
 
+# 自定义形象 data URL 的最大字符数（2MB 图片经 base64 约 2.7MB，留一点余量）。
+AVATAR_MAX_CHARS = 3_000_000
+
 
 def _default_map(width: int, height: int) -> GridMap:
     """
@@ -152,6 +155,10 @@ class SimulationEngine:
         self._event_listeners: list = []
         # 一键路线规划结果（含电力预算），未规划时为 None，随 state 帧下发。
         self.plan: dict | None = None
+        # 机器人自定义形象（V2.3.1）：data URL 存在服务端，多端可同步；
+        # 版本号随 state 帧下发，前端发现版本变化才去拉图片，避免每帧传大图。
+        self.avatar: str | None = None
+        self.avatar_version: int = 0
         # 低电量且充电点不可达的告警去重标记。
         self._charge_unreachable_notified = False
         # 充电前是否正在巡检：充满后自动继续（V2.0）。
@@ -194,6 +201,38 @@ class SimulationEngine:
         """
         self._emit(frame)
 
+    # ---------- 机器人形象（V2.3.1） ----------
+
+    def get_avatar(self) -> dict:
+        """
+        获取当前自定义形象（GET /robot/avatar）。
+
+        :return: {'data_url': str | None, 'version': int}。
+        """
+        return {"data_url": self.avatar, "version": self.avatar_version}
+
+    def set_avatar(self, data_url: str | None) -> dict:
+        """
+        设置或清除机器人形象（PUT / DELETE /robot/avatar）。
+
+        形象存在服务端内存里，所有客户端按版本号拉取，因此手机和电脑看到的是
+        同一张图；服务重启后回到默认形象（与地图一样是内存态）。
+
+        :param data_url: 图片 data URL；None 或空串表示恢复默认绘制。
+        :return: {'data_url': str | None, 'version': int}。
+        :raises ValueError: 不是图片 data URL，或超过大小上限。
+        """
+        if data_url:
+            if not data_url.startswith("data:image/") or ";base64," not in data_url:
+                raise ValueError("形象必须是图片 data URL")
+            if len(data_url) > AVATAR_MAX_CHARS:
+                raise ValueError("形象图片过大（上限约 2MB）")
+        self.avatar = data_url or None
+        self.avatar_version += 1
+        logger.info("机器人形象已更新：%s", "自定义图片" if self.avatar else "恢复默认")
+        self._emit({"type": "avatar", "data": {"version": self.avatar_version}})
+        return self.get_avatar()
+
     def _emit_anomaly(self, event: dict) -> None:
         """广播异常事件帧并写入日志。"""
         logger.warning("异常事件: %s - %s @ %s", event["type"], event["message"], event["position"])
@@ -207,12 +246,16 @@ class SimulationEngine:
     def _emit_blocked(self, message: str) -> None:
         """广播"巡检遇阻"帧：前端据此弹窗询问是否清障（V2.0）。"""
         cell = self.blocked["cell"] if self.blocked else None
+        reason = self.blocked.get("reason") if self.blocked else None
+        goal = self.blocked.get("goal") if self.blocked else None
         logger.info("巡检遇阻，等待决策：%s", message)
         self._emit(
             {
                 "type": "blocked",
                 "data": {
                     "cell": cell,
+                    "reason": reason,
+                    "goal": goal,
                     "message": message,
                     "battery": round(self.battery, 1),
                     "clear_cost": config.settings.clear_obstacle_cost,
@@ -413,10 +456,22 @@ class SimulationEngine:
             config.settings.clear_obstacle_cost,
         )
         if not plan["path"]:
-            self.plan = None
-            logger.info("路线规划失败：目标 %s 不可达", goal)
-            self._emit_notice(plan.get("message") or "无法规划路线：目标不可达")
+            # V2.3.1：目标完全被封死时，给出"拆哪一格能通"的建议，
+            # 前端据此显示"清除并重新规划"，而不是只弹一句"不可达"。
+            suggestion = find_min_obstacle_to_remove(self.map.grid, (self.x, self.y), (goal[0], goal[1]))
+            plan["suggestion"] = list(suggestion) if suggestion else None
+            if suggestion:
+                plan["message"] = (
+                    f"无法到达 [{goal[0]}, {goal[1]}]：建议清除 "
+                    f"[{suggestion[0]}, {suggestion[1]}] 打通路线"
+                )
+            else:
+                plan["message"] = "无法规划路线：即使拆除单格障碍也无法到达该目标"
+            self.plan = plan
+            logger.info("路线规划失败：目标 %s 不可达（建议 %s）", goal, suggestion)
+            self._emit_notice(plan["message"])
             return plan
+        plan["suggestion"] = None
         self.plan = plan
         logger.info(
             "路线已规划（预览）：全程 %d 格，待清障 %d 个，预计耗电 %.1f%%",
@@ -620,34 +675,49 @@ class SimulationEngine:
 
     def resolve_fault(self) -> dict:
         """
-        一键排障：机器人被障碍卡住（mode=blocked）时清除正前方障碍格。
+        一键排障（V2.3.1 扩展为三种场景）。
 
-        正前方朝向由 theta 近似为四方向步长。
+        1. 手动撞墙（mode=blocked）：免费清除正前方障碍，恢复正常控制；
+        2. 巡检受阻 / 目标不可达（blocked 已记录，但 mode 仍是 patrol）：
+           扣 5% 清除挡路的那一格，然后继续巡检——原先这种情况会回
+           "当前无阻塞故障"，用户点了没反应；
+        3. 有路线预览且规划里还有待清障目标：直接按规划批量清障。
 
-        :return: 通知帧 {'type': 'notice', 'data': {'message': str}}。
+        :return: 通知帧或控制类响应体。
         """
-        if self.mode != MODE_BLOCKED:
-            message = "当前无阻塞故障，无需排障"
-            logger.info("一键排障：%s", message)
+        if self.mode == MODE_BLOCKED:
+            dx, dy = self._theta_to_step(self.theta)
+            target = (self.x + dx, self.y + dy)
+            if self.map.in_bounds(*target) and self.map.grid[target[1]][target[0]] == CELL_OBSTACLE:
+                if self.map.is_boundary(*target):
+                    message = "前方是固定边界墙，无法清除；请向其他方向移动脱离"
+                    logger.info("一键排障：前方为边界墙 (%s, %s)，不清除", *target)
+                    self.mode = MODE_MANUAL
+                    self.path = []
+                    self._emit_notice(message)
+                    return {"type": "notice", "data": {"message": message}}
+                self.map.grid[target[1]][target[0]] = 0
+                logger.info("一键排障：拆除前方障碍 (%s, %s)", *target)
+            self.mode = MODE_MANUAL
+            self.path = []
+            self._refresh_plan()
+            message = "已排除前方障碍，恢复正常控制"
             self._emit_notice(message)
             return {"type": "notice", "data": {"message": message}}
 
-        dx, dy = self._theta_to_step(self.theta)
-        target = (self.x + dx, self.y + dy)
-        if self.map.in_bounds(*target) and self.map.grid[target[1]][target[0]] == CELL_OBSTACLE:
-            if self.map.is_boundary(*target):
-                message = "前方是固定边界墙，无法清除；请向其他方向移动脱离"
-                logger.info("一键排障：前方为边界墙 (%s, %s)，不清除", *target)
-                self.mode = MODE_MANUAL
-                self.path = []
-                self._emit_notice(message)
-                return {"type": "notice", "data": {"message": message}}
-            self.map.grid[target[1]][target[0]] = 0
-            logger.info("一键排障：拆除前方障碍 (%s, %s)", *target)
-        self.mode = MODE_MANUAL
-        self.path = []
-        self._refresh_plan()
-        message = "已排除前方障碍，恢复正常控制"
+        # 巡检受阻（含目标不可达）：走"清障并继续"的正式流程，会扣电并恢复巡检。
+        if self.blocked and self.blocked.get("cell"):
+            cell = list(self.blocked["cell"])
+            logger.info("一键排障：清除巡检阻碍 %s", cell)
+            return self.clear_obstacle_at(cell)
+
+        # 还在路线预览阶段：直接把规划里的待清障目标清掉。
+        if self.plan and self.plan.get("clearable"):
+            logger.info("一键排障：按路线预览清除 %d 处障碍", len(self.plan["clearable"]))
+            return self.execute_plan_clear()
+
+        message = "当前没有需要排除的障碍"
+        logger.info("一键排障：%s", message)
         self._emit_notice(message)
         return {"type": "notice", "data": {"message": message}}
 
@@ -703,9 +773,16 @@ class SimulationEngine:
         self.paused = False
         self.blocked = None
         self._resume_patrol_after_charge = False
+        # V2.3.1：巡检一开始就作废"路线预览"，避免预览浮层继续挂在界面上，
+        # 也避免前端再发一次 cancel_plan 触发"路线规划已取消"的误导提示。
+        self.plan = None
         self._plan_current_segment()
         logger.info("巡检启动，共 %d 个巡检点：%s", len(ordered), ordered)
-        self._emit_notice(f"自动巡检已启动，共 {len(ordered)} 个巡检点")
+        if len(ordered) == 1:
+            goal = ordered[0]
+            self._emit_notice(f"已出发前往巡检点 [{goal[0]}, {goal[1]}]，单点任务")
+        else:
+            self._emit_notice(f"自动巡检已启动，共 {len(ordered)} 个巡检点")
         return self.patrol.status_dict()
 
     def stop_patrol(self) -> dict:
@@ -806,30 +883,61 @@ class SimulationEngine:
         return self.patrol.status_dict()
 
     def _plan_current_segment(self) -> None:
-        """为当前巡检点规划路径；不可达时告警并跳过（最多跳过全部巡检点）。"""
-        for _ in range(len(self.patrol.goals) + 1):
-            goal = self.patrol.current_goal()
-            if goal is None:
-                self.path = []
-                return
-            result = astar(self.map.grid, (self.x, self.y), goal)
-            if result["path"]:
-                self.path = smooth_and_expand(self.map.grid, result["path"])
-                self.patrol.path_remain = max(0, len(self.path) - 1)
-                self.patrol.blocked_by = None
-                return
-            self._emit_anomaly(
-                {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "type": ANOMALY_OBSTACLE,
-                    "message": f"无法到达巡检点 [{goal[0]}, {goal[1]}]，已跳过",
-                    "position": [self.x, self.y],
-                }
+        """
+        为当前巡检点规划路径。
+
+        V2.3.1：目标不可达时不再静默跳过，而是先找一处"拆掉它就能通"的障碍，
+        暂停巡检并把选择权交给用户（清除后重试 / 跳过 / 停止）；只有连单格
+        拆除都救不了时，才退回原来的"报警并跳过"。
+        """
+        goal = self.patrol.current_goal()
+        if goal is None:
+            self.path = []
+            return
+        result = astar(self.map.grid, (self.x, self.y), goal)
+        if result["path"]:
+            self.path = smooth_and_expand(self.map.grid, result["path"])
+            self.patrol.path_remain = max(0, len(self.path) - 1)
+            self.patrol.blocked_by = None
+            return
+
+        suggestion = find_min_obstacle_to_remove(self.map.grid, (self.x, self.y), goal)
+        if suggestion is not None:
+            self.paused = True
+            self.patrol.paused = True
+            self.patrol.blocked_by = list(suggestion)
+            self.blocked = {
+                "cell": list(suggestion),
+                "reason": "unreachable",
+                "goal": list(goal),
+            }
+            self.path = []
+            self.speed = 0.0
+            logger.info(
+                "巡检点 %s 不可达，建议清除 %s 后重试", goal, suggestion
             )
-            self.patrol.advance()
+            self._emit_blocked(
+                f"无法到达巡检点 [{goal[0]}, {goal[1]}]：建议清除 "
+                f"[{suggestion[0]}, {suggestion[1]}] 打通路线"
+            )
+            return
+
+        # 单格拆除也无解：保持旧行为——记异常、跳过该点、继续下一个。
+        self._emit_anomaly(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "type": ANOMALY_OBSTACLE,
+                "message": f"无法到达巡检点 [{goal[0]}, {goal[1]}]，已跳过",
+                "position": [self.x, self.y],
+            }
+        )
+        self.patrol.advance()
         self.path = []
-        self.patrol.finish()
-        self.mode = MODE_MANUAL
+        if self.patrol.current_goal() is None:
+            self.patrol.finish()
+            self.mode = MODE_MANUAL
+        else:
+            self._plan_current_segment()
 
     def _handle_patrol_blocked(self, blocked_cell: list[int]) -> None:
         """
@@ -904,6 +1012,7 @@ class SimulationEngine:
             "blocked": self.blocked,
             "pending": [list(c) for c in self.pending],
             "trail_len": len(self.visited_trail),
+            "avatar_version": self.avatar_version,
         }
         return {"type": "state", "data": data}
 

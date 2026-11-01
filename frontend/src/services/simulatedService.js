@@ -21,7 +21,7 @@
 import { RobotService } from './robotService.js'
 import { astar, smoothAndExpand } from './astar.js'
 import { handleAgentCommand } from './agent.js'
-import { buildPlan } from './routePlanner.js'
+import { buildPlan, suggestRemoval } from './routePlanner.js'
 import { MAP_PRESETS, getPreset } from './mapPresets.js'
 import { enforceBorder, isBoundaryCell } from '../utils/mapBoundary.js'
 import { validateMap } from '../utils/mapIO.js'
@@ -98,6 +98,9 @@ export class SimulatedService extends RobotService {
     this._blocked = null
     // 充电前是否处于巡检状态（充满自动继续）
     this._resumePatrolAfterCharge = false
+    // 自定义形象（V2.3.1）：离线模式只存内存 + localStorage，由界面负责持久化
+    this._avatar = null
+    this._avatarVersion = 0
 
     this._initRobotState()
     this._initPatrolState()
@@ -640,30 +643,53 @@ export class SimulatedService extends RobotService {
    * 为当前巡检点规划 A* 路径（不可达时跳过并继续下一个）。
    */
   _planToCurrentGoal() {
-    for (let guard = 0; guard <= this._patrol.goals.length; guard += 1) {
-      const goal = this._patrol.goals[this._patrol.currentGoalIndex]
-      if (!goal) {
-        this._state.path = []
-        return
-      }
-      const result = astar(this._map.grid, [this._state.x, this._state.y], goal)
-      if (result.path.length > 0) {
-        // 与后端 _plan_current_segment 保持一致：抽稀拐点后再逐格回填。
-        this._state.path = smoothAndExpand(this._map.grid, result.path)
-        this._patrol.pathRemain = Math.max(0, this._state.path.length - 1)
-        return
-      }
-      this._addAnomaly('obstacle', `无法到达巡检点 [${goal[0]}, ${goal[1]}]，已跳过`, [
-        this._state.x,
-        this._state.y,
-      ])
-      this._patrol.currentGoalIndex += 1
-      if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
-        this._finishPatrol()
-        return
-      }
+    const goal = this._patrol.goals[this._patrol.currentGoalIndex]
+    if (!goal) {
+      this._state.path = []
+      return
     }
-    this._state.path = []
+    const result = astar(this._map.grid, [this._state.x, this._state.y], goal)
+    if (result.path.length > 0) {
+      // 与后端 _plan_current_segment 保持一致：抽稀拐点后再逐格回填。
+      this._state.path = smoothAndExpand(this._map.grid, result.path)
+      this._patrol.pathRemain = Math.max(0, this._state.path.length - 1)
+      this._patrol.blockedBy = null
+      return
+    }
+
+    // V2.3.1：不可达时不再静默跳过，先找一处"拆掉就能通"的障碍，
+    // 暂停并弹窗让用户决定（清除重试 / 跳过 / 停止）。
+    const suggestion = suggestRemoval(this._map.grid, [this._state.x, this._state.y], goal)
+    if (suggestion) {
+      this._paused = true
+      this._patrol.paused = true
+      this._patrol.blockedBy = [...suggestion]
+      this._blocked = { cell: [...suggestion], reason: 'unreachable', goal: [...goal] }
+      this._state.path = []
+      this._state.speed = 0.0
+      this._emitEvent('blocked', {
+        cell: [...suggestion],
+        reason: 'unreachable',
+        goal: [...goal],
+        message: `无法到达巡检点 [${goal[0]}, ${goal[1]}]：建议清除 [${suggestion[0]}, ${suggestion[1]}] 打通路线`,
+        battery: Math.round(this._state.battery * 10) / 10,
+        clear_cost: CLEAR_OBSTACLE_COST,
+      })
+      this._emitState()
+      return
+    }
+
+    // 单格拆除也无解：保留旧行为——记异常、跳过该点。
+    this._addAnomaly('obstacle', `无法到达巡检点 [${goal[0]}, ${goal[1]}]，已跳过`, [
+      this._state.x,
+      this._state.y,
+    ])
+    this._patrol.currentGoalIndex += 1
+    if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
+      this._finishPatrol()
+      return
+    }
+    this._planToCurrentGoal()
   }
 
   /**
@@ -993,35 +1019,49 @@ export class SimulatedService extends RobotService {
    * 障碍格并清除，随后恢复正常控制；无阻塞时仅推送系统提示。
    */
   resolveFault() {
-    if (this._state.mode !== 'blocked') {
-      this._emitEvent('notice', { message: '当前无阻塞故障，无需排障' })
+    // 1) 手动撞墙（mode=blocked）：免费清除正前方障碍。
+    if (this._state.mode === 'blocked') {
+      const dir = this._thetaToDirection(this._state.theta)
+      const target = [this._state.x + dir[0], this._state.y + dir[1]]
+      if (
+        target[0] >= 0 && target[0] < this._map.width &&
+        target[1] >= 0 && target[1] < this._map.height &&
+        this._map.grid[target[1]][target[0]] === 1
+      ) {
+        if (isBoundaryCell(target[0], target[1], this._map.width, this._map.height)) {
+          this._state.mode = 'manual'
+          this._state.path = []
+          this._updateSensors()
+          this._recordSnapshot()
+          this._emitState()
+          this._emitEvent('notice', { message: '前方是固定边界墙，无法清除；请向其他方向移动脱离' })
+          return
+        }
+        this._map.grid[target[1]][target[0]] = 0
+        this._saveMap()
+      }
+      this._state.mode = 'manual'
+      this._state.path = []
+      this._updateSensors()
+      this._recordSnapshot()
+      this._emitState()
+      this._emitEvent('notice', { message: '已排除前方障碍，恢复正常控制' })
       return
     }
-    const dir = this._thetaToDirection(this._state.theta)
-    const target = [this._state.x + dir[0], this._state.y + dir[1]]
-    if (
-      target[0] >= 0 && target[0] < this._map.width &&
-      target[1] >= 0 && target[1] < this._map.height &&
-      this._map.grid[target[1]][target[0]] === 1
-    ) {
-      if (isBoundaryCell(target[0], target[1], this._map.width, this._map.height)) {
-        this._state.mode = 'manual'
-        this._state.path = []
-        this._updateSensors()
-        this._recordSnapshot()
-        this._emitState()
-        this._emitEvent('notice', { message: '前方是固定边界墙，无法清除；请向其他方向移动脱离' })
-        return
-      }
-      this._map.grid[target[1]][target[0]] = 0
-      this._saveMap()
+
+    // 2) 巡检受阻 / 目标不可达：走正式清障流程（扣 5% 并继续巡检）。
+    if (this._blocked && this._blocked.cell) {
+      this.clearObstacleAt([...this._blocked.cell])
+      return
     }
-    this._state.mode = 'manual'
-    this._state.path = []
-    this._updateSensors()
-    this._recordSnapshot()
-    this._emitState()
-    this._emitEvent('notice', { message: '已排除前方障碍，恢复正常控制' })
+
+    // 3) 路线预览阶段：直接清掉规划里的待清障目标。
+    if (this._plan && this._plan.clearable && this._plan.clearable.length > 0) {
+      this.executePlanClear()
+      return
+    }
+
+    this._emitEvent('notice', { message: '当前没有需要排除的障碍' })
   }
 
   /**
@@ -1039,8 +1079,14 @@ export class SimulatedService extends RobotService {
       CLEAR_OBSTACLE_COST
     )
     if (plan.path.length === 0) {
-      this._plan = null
-      this._emitEvent('notice', { message: plan.message || '无法规划路线：目标不可达' })
+      // V2.3.1：不可达时给出"拆哪一格能通"的建议，并保留规划结果供预览卡
+      // 显示"不可达 + 一键清除重试"，而不是只弹一句提示就结束。
+      plan.suggestion = suggestRemoval(this._map.grid, [this._state.x, this._state.y], goal)
+      plan.message = plan.suggestion
+        ? `无法到达 [${goal[0]}, ${goal[1]}]：建议清除 [${plan.suggestion[0]}, ${plan.suggestion[1]}] 打通路线`
+        : '无法规划路线：即使拆除单格障碍也无法到达该目标'
+      this._plan = plan
+      this._emitEvent('notice', { message: plan.message })
       this._emitState()
       return plan
     }
@@ -1353,6 +1399,35 @@ export class SimulatedService extends RobotService {
   }
 
   /**
+   * 读取当前自定义形象（V2.3.1，离线模式）。
+   * @returns {Promise<string|null>} data URL。
+   */
+  async getAvatar() {
+    return this._avatar
+  }
+
+  /**
+   * 保存自定义形象（V2.3.1，离线模式）：只更新内存并广播，
+   * 持久化由界面写入 localStorage（离线静态页没有服务端可同步）。
+   * @param {string} dataUrl - 图片 data URL 或 null。
+   * @returns {Promise<string|null>} 保存后的 data URL。
+   */
+  async uploadAvatar(dataUrl) {
+    this._avatar = dataUrl || null
+    this._avatarVersion += 1
+    this._emitEvent('avatar', { data_url: this._avatar, version: this._avatarVersion })
+    return this._avatar
+  }
+
+  /**
+   * 清除自定义形象（V2.3.1，离线模式）。
+   * @returns {Promise<null>}
+   */
+  async removeAvatar() {
+    return this.uploadAvatar(null)
+  }
+
+  /**
    * 主动返回充电点（V2.3.0）：与低电量自动返航复用同一套状态机。
    */
   goCharge() {
@@ -1435,10 +1510,23 @@ export class SimulatedService extends RobotService {
     this._blocked = null
     this._resumePatrolAfterCharge = false
     this._state.mode = 'patrol'
+    // V2.3.1：一开始巡检就作废预览，避免预览浮层继续挂着、也避免再发一次
+    // cancelPlan 触发"路线规划已取消"的误导提示。
+    this._plan = null
     this._planToCurrentGoal()
     this._updateSensors()
     this._recordSnapshot()
     this._emitState()
+    if (this._patrol.totalGoals === 1) {
+      const goal = this._patrol.goals[0]
+      this._emitEvent('notice', {
+        message: `已出发前往巡检点 [${goal[0]}, ${goal[1]}]，单点任务`,
+      })
+    } else {
+      this._emitEvent('notice', {
+        message: `自动巡检已启动，共 ${this._patrol.totalGoals} 个巡检点`,
+      })
+    }
   }
 
   /**
