@@ -130,8 +130,8 @@ app = FastAPI(
     title="智能巡检机器人二维仿真系统",
     description="基于 FastAPI 的二维栅格机器人仿真后端：A* 八邻域寻路、虚拟传感器、"
     "规则 + IsolationForest 双策略异常检测、一键路线规划、自然语言 Agent 指令层"
-    "（V2.3.3）",
-    version="V2.3.3",
+    "（V2.3.4）",
+    version="V2.3.4",
     lifespan=lifespan,
 )
 
@@ -243,7 +243,7 @@ async def health() -> dict:
     age = None if last is None else round(time.time() - last, 1)
     return {
         "status": "ok",
-        "version": "V2.3.3",
+        "version": "V2.3.4",
         "tick_errors": _TICK_STATE["tick_errors"],
         "last_tick_age_s": age,
         "tick_alive": age is not None and age < max(5.0, settings.tick_interval_ms / 1000 * 10),

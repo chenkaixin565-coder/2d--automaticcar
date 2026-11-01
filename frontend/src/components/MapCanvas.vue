@@ -45,6 +45,7 @@
 
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { isBoundaryCell } from '../utils/mapBoundary.js'
+import { trailSegments } from '../utils/trail.js'
 
 /** 每个栅格的显示边长（像素）。 */
 const CELL_PIXELS = 40
@@ -713,9 +714,13 @@ function flashRejectCell(x, y) {
 
 /**
  * 绘制已访问轨迹。
+ *
+ * V2.3.4：按"相邻格"切成多段再画。"重新开始"会把机器人搬回起点但保留旧尾迹，
+ * 若一笔连下去就会多出一条横跨地图、穿过障碍的直线，看起来像多画了一段。
  */
 function drawTrail(ctx, trail) {
-  if (!trail || trail.length < 2) return
+  const segments = trailSegments(trail)
+  if (segments.length === 0) return
   ctx.save()
   // V2.0：尾迹统一用细虚线，与"闪烁虚线的规划路线"区分开。
   ctx.strokeStyle = props.isDark ? 'rgba(148, 163, 184, 0.75)' : 'rgba(100, 116, 139, 0.6)'
@@ -723,17 +728,19 @@ function drawTrail(ctx, trail) {
   ctx.setLineDash([5 / props.scale, 5 / props.scale])
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
-  ctx.beginPath()
-  trail.forEach(([x, y], index) => {
-    const px = (x + 0.5) * CELL_PIXELS
-    const py = (y + 0.5) * CELL_PIXELS
-    if (index === 0) {
-      ctx.moveTo(px, py)
-    } else {
-      ctx.lineTo(px, py)
-    }
-  })
-  ctx.stroke()
+  for (const segment of segments) {
+    ctx.beginPath()
+    segment.forEach(([x, y], index) => {
+      const px = (x + 0.5) * CELL_PIXELS
+      const py = (y + 0.5) * CELL_PIXELS
+      if (index === 0) {
+        ctx.moveTo(px, py)
+      } else {
+        ctx.lineTo(px, py)
+      }
+    })
+    ctx.stroke()
+  }
   ctx.restore()
 }
 
