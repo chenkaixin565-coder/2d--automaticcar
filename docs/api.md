@@ -1,6 +1,6 @@
 # 接口文档（REST + WebSocket）
 
-> 适用版本：**V2.3.1**
+> 适用版本：**V2.3.3**
 > 整理依据：`backend/app/api/rest.py` 与 `websocket.py` 的实际实现；接口有变动时以代码为准。
 > 在线可交互版：`https://irm-sim-2d.onrender.com/docs`
 
@@ -280,6 +280,7 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 | `notice` | 事件触发 | 操作提示（规划完成、清障成功等） |
 | `blocked` | 事件触发 | 巡检遇阻（V2.3.1 增加 `reason`：`obstacle` / `barrier` / `unreachable`，不可达时带 `goal`），含 `cell / message / battery / clear_cost` |
 | `avatar` | 形象变更 | 只带 `version`，客户端据此去 `GET /robot/avatar` 拉图（V2.3.1） |
+| `map` | 地图变更 | 清障 / 编辑 / 新建地图后推送权威地图，前端直接覆盖（V2.3.3） |
 | `empty` | 事件触发 | 电量耗尽 |
 | `agent` | 指令执行后 | Agent 执行结果（字段同第 10 节返回体） |
 | `auth_required` | 指令被拒时 | `{code, readonly, message}`，前端据此弹密钥框 |
@@ -370,6 +371,7 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 
 | 版本 | 变更 |
 |---|---|
+| V2.3.3 | 新增 `map` 帧：地图变更后广播权威地图；前端按帧覆盖，修复"清障后地图不同步" |
 | V2.3.1 | 新增 `/robot/avatar` 三件套与 `avatar` 帧；`blocked` 帧增加 `reason`/`goal`；Agent 支持「第 N 号巡检点」；开始巡检会静默作废预览 |
 | V2.3.0 | 新增 `/agent/command`、`/agent/tools`、`/robot/charge`；`/path` 改八邻域并返回 `reachable` / `error`；新增 `agent` 帧与 `go_charge` 指令 |
 | V2.2.1 | WS 支持只读接入；新增 `auth_state` 帧；指令级鉴权 |

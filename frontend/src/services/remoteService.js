@@ -161,6 +161,11 @@ export class RemoteService extends RobotService {
     } else if (frame.type === 'avatar') {
       // 别的客户端换了形象：按版本号重新拉取。
       this._syncAvatar(frame.data && frame.data.version)
+    } else if (frame.type === 'map') {
+      // 地图被修改（清障 / 编辑 / 新建）：直接用服务端权威地图覆盖本地缓存，
+      // 否则会出现"障碍已清掉、画面还在、机器人却从上面穿过去"（V2.3.3）。
+      this._map = frame.data
+      this._emitEvent('map', frame.data)
     } else if (frame.type === 'empty') {
       this._emitEvent('empty', frame.data)
     } else if (frame.type === 'auth_state') {
@@ -639,6 +644,8 @@ export class RemoteService extends RobotService {
     const { map, ...stateData } = payload
     if (map && map.grid && map.width && map.height) {
       this._map = map
+      // 通知界面：地图以服务端为准（V2.3.3）
+      this._emitEvent('map', map)
     }
     this._state = { ...this._state, ...stateData }
     this._emitState()

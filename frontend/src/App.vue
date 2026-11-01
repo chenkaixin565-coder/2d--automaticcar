@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.3.2</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.3.3</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -554,6 +554,9 @@ onMounted(() => {
       if (frame.data && typeof frame.data.data_url !== 'undefined') {
         robotAvatar.value = frame.data.data_url || null
       }
+    } else if (frame.type === 'map') {
+      // 地图变更（V2.3.3）：清障 / 编辑 / 新建后按服务端权威地图重绘
+      applyMapFrame(frame.data)
     } else if (frame.type === 'empty') {
       showEmptyModal.value = true
     } else if (frame.type === 'auth_required') {
@@ -1372,14 +1375,14 @@ function onAgentNotify(payload) {
 }
 
 /**
- * 智能指令面板执行后回传的最新地图（V2.3.0）。
+ * 用服务端权威地图覆盖本地响应式地图（V2.3.3）。
  *
- * 指令可能改动了地图（清障 / 改格子 / 新建地图）；服务层已经生效，这里把
- * 响应式地图同步过来，否则离线模式下画布还停在旧图。
+ * 清障 / 编辑 / 新建地图之后，地图必须以服务端为准；否则会出现
+ * "障碍已经清掉、画面还在、机器人却从上面穿过去"。
  *
- * @param {Object} freshMap - 服务层重新拉取的地图。
+ * @param {Object} freshMap - 完整地图对象。
  */
-function onAgentMapUpdated(freshMap) {
+function applyMapFrame(freshMap) {
   if (!freshMap || !freshMap.grid) return
   const sizeChanged = freshMap.width !== map.width || freshMap.height !== map.height
   Object.assign(map, freshMap)
@@ -1393,7 +1396,17 @@ function onAgentMapUpdated(freshMap) {
   }
 }
 
-function toastClass(type) {  const classes = {
+/**
+ * 智能指令面板执行后回传的最新地图（V2.3.0）。
+ *
+ * @param {Object} freshMap - 服务层重新拉取的地图。
+ */
+function onAgentMapUpdated(freshMap) {
+  applyMapFrame(freshMap)
+}
+
+function toastClass(type) {
+  const classes = {
     low_battery: 'border-orange-500',
     obstacle: 'border-red-500',
     sensor_fault: 'border-purple-500',

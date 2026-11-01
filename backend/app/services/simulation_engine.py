@@ -243,6 +243,16 @@ class SimulationEngine:
         logger.info("通知: %s", message)
         self._emit({"type": "notice", "data": {"message": message}})
 
+    def _emit_map(self) -> None:
+        """
+        广播权威地图（V2.3.3）。
+
+        地图被修改后立刻同步给所有客户端。此前地图只放在 HTTP 响应里，
+        而正常操作走 WebSocket 通道，客户端拿不到新地图，于是出现
+        "障碍已经清掉、画面还显示障碍，机器人却从上面穿过去"的观感。
+        """
+        self._emit({"type": "map", "data": self.map.model_dump()})
+
     def _emit_blocked(self, message: str) -> None:
         """广播"巡检遇阻"帧：前端据此弹窗询问是否清障（V2.0）。"""
         cell = self.blocked["cell"] if self.blocked else None
@@ -295,6 +305,7 @@ class SimulationEngine:
         # 待清障记录里已经被新地图清除的格子直接剔除。
         self.pending = [c for c in self.pending if new_map.in_bounds(*c) and new_map.grid[c[1]][c[0]] == CELL_OBSTACLE]
         logger.info("地图已更新: %dx%d", new_map.width, new_map.height)
+        self._emit_map()
         return self.map.model_dump()
 
     def new_map(self, width: int, height: int) -> dict:
@@ -544,6 +555,7 @@ class SimulationEngine:
             self.paused = False
             self.patrol.paused = False
         self._refresh_plan()
+        self._emit_map()
         return self._command_payload()
 
     def clear_obstacle_at(self, cell: list[int]) -> dict:
@@ -594,6 +606,7 @@ class SimulationEngine:
             # 清的不是当前挡路的格子：仍尝试重新规划，能绕则恢复。
             self._plan_current_segment()
         self._refresh_plan()
+        self._emit_map()
         return self._command_payload()
 
     def execute_plan_clear(self) -> dict:
@@ -636,6 +649,8 @@ class SimulationEngine:
         if self.patrol.running:
             self._plan_current_segment()
         self._refresh_plan()
+        if cleared:
+            self._emit_map()
         return self._command_payload()
 
     def clear_nearest_pending(self) -> dict:
@@ -701,6 +716,7 @@ class SimulationEngine:
             self.mode = MODE_MANUAL
             self.path = []
             self._refresh_plan()
+            self._emit_map()
             message = "已排除前方障碍，恢复正常控制"
             self._emit_notice(message)
             return {"type": "notice", "data": {"message": message}}
