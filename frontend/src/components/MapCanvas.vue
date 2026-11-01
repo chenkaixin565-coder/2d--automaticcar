@@ -712,11 +712,15 @@ function flashRejectCell(x, y) {
   }, 400)
 }
 
+/** 尾迹上每隔几格画一个方向箭头（V2.3.7）。 */
+const TRAIL_ARROW_EVERY = 4
+
 /**
  * 绘制已访问轨迹。
  *
  * V2.3.4：按"相邻格"切成多段再画。"重新开始"会把机器人搬回起点但保留旧尾迹，
  * 若一笔连下去就会多出一条横跨地图、穿过障碍的直线，看起来像多画了一段。
+ * V2.3.7：沿轨迹加方向箭头，路径自我重叠时也能看出行进方向。
  */
 function drawTrail(ctx, trail) {
   const segments = trailSegments(trail)
@@ -741,7 +745,40 @@ function drawTrail(ctx, trail) {
     })
     ctx.stroke()
   }
+
+  // V2.3.7：方向箭头。先按"每 4 格一个"稀疏摆放，短路径至少放一个。
+  ctx.setLineDash([])
+  ctx.fillStyle = props.isDark ? 'rgba(203, 213, 225, 0.95)' : 'rgba(71, 85, 105, 0.85)'
+  for (const segment of segments) {
+    if (segment.length < 2) continue
+    const step = Math.min(TRAIL_ARROW_EVERY, segment.length - 1)
+    for (let index = step; index < segment.length; index += step) {
+      drawTrailArrow(ctx, segment[index - 1], segment[index])
+    }
+  }
   ctx.restore()
+}
+
+/**
+ * 在轨迹的某一段上画一个箭头（指向行进方向）。
+ *
+ * @param {CanvasRenderingContext2D} ctx - 画布上下文。
+ * @param {number[]} from - 上一格坐标 [x, y]。
+ * @param {number[]} to - 当前格坐标 [x, y]。
+ */
+function drawTrailArrow(ctx, from, to) {
+  const x1 = (from[0] + 0.5) * CELL_PIXELS
+  const y1 = (from[1] + 0.5) * CELL_PIXELS
+  const x2 = (to[0] + 0.5) * CELL_PIXELS
+  const y2 = (to[1] + 0.5) * CELL_PIXELS
+  const angle = Math.atan2(y2 - y1, x2 - x1)
+  const size = 5.5 / props.scale
+  ctx.beginPath()
+  ctx.moveTo(x2, y2)
+  ctx.lineTo(x2 - size * Math.cos(angle - 0.45), y2 - size * Math.sin(angle - 0.45))
+  ctx.lineTo(x2 - size * Math.cos(angle + 0.45), y2 - size * Math.sin(angle + 0.45))
+  ctx.closePath()
+  ctx.fill()
 }
 
 /**
