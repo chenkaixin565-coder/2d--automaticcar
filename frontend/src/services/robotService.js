@@ -270,4 +270,35 @@ export class RobotService {
   setCell(_x, _y, _value) {
     throw new Error('子类必须实现 setCell 方法')
   }
+
+  /**
+   * 读取当前机器人状态快照（V2.3.0，供 Agent 指令层拼装结果文案）。
+   * @returns {Object} { x, y, theta, battery, speed, mode, path, sensors }。
+   */
+  getState() {
+    throw new Error('子类必须实现 getState 方法')
+  }
+
+  /**
+   * 让机器人返回充电点（V2.3.0）。
+   * @returns {Promise<void>|void}
+   */
+  goCharge() {
+    throw new Error('子类必须实现 goCharge 方法')
+  }
+
+  /**
+   * 下发一条自然语言指令（V2.3.0）。
+   *
+   * 在线模式下整句提交给后端 Agent 解析执行；离线模式下由本地规则解析器
+   * 执行，返回字段两者一致。
+   *
+   * @param {string} _text - 用户指令。
+   * @param {boolean} [_confirm=false] - 破坏性操作的二次确认。
+   * @returns {Promise<Object>} { understood, tool, args, source, executed,
+   *   need_confirm, ok, message, result, latency_ms }。
+   */
+  sendAgentCommand(_text, _confirm = false) {
+    throw new Error('子类必须实现 sendAgentCommand 方法')
+  }
 }

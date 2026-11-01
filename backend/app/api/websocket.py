@@ -261,6 +261,8 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
         engine.execute_plan_clear()
     elif action == "carry_home":
         engine.carry_home()
+    elif action == "go_charge":
+        engine.go_charge()
     elif action == "set_cell":
         engine.set_cell(int(payload.get("x", 0)), int(payload.get("y", 0)), int(payload.get("value", 0)))
     elif action == "new_map":

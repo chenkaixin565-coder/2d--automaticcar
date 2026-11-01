@@ -19,7 +19,8 @@
  */
 
 import { RobotService } from './robotService.js'
-import { astar } from './astar.js'
+import { astar, smoothAndExpand } from './astar.js'
+import { handleAgentCommand } from './agent.js'
 import { buildPlan } from './routePlanner.js'
 import { MAP_PRESETS, getPreset } from './mapPresets.js'
 import { enforceBorder, isBoundaryCell } from '../utils/mapBoundary.js'
@@ -227,7 +228,7 @@ export class SimulatedService extends RobotService {
     this._preChargeMode = this._state.mode
     this._resumePatrolAfterCharge = this._patrol.running
     this._state.mode = 'charging'
-    this._state.path = pathResult.path
+    this._state.path = smoothAndExpand(this._map.grid, pathResult.path)
     this._paused = false
     this._patrol.paused = false
     this._blocked = null
@@ -265,7 +266,7 @@ export class SimulatedService extends RobotService {
       // 路径失效：重新规划；实在到不了就放弃返航，避免原地"假装充电"。
       const retry = astar(this._map.grid, [this._state.x, this._state.y], charge)
       if (retry.path.length > 1) {
-        this._state.path = retry.path
+        this._state.path = smoothAndExpand(this._map.grid, retry.path)
       } else {
         this._state.mode = 'manual'
         this._state.path = []
@@ -336,8 +337,8 @@ export class SimulatedService extends RobotService {
     if (goal) {
       const detour = astar(this._map.grid, [this._state.x, this._state.y], goal)
       if (detour.path.length > 1) {
-        this._state.path = detour.path
-        this._patrol.pathRemain = Math.max(0, detour.path.length - 1)
+        this._state.path = smoothAndExpand(this._map.grid, detour.path)
+        this._patrol.pathRemain = Math.max(0, this._state.path.length - 1)
         if (this._blocked || this._paused) {
           this._blocked = null
           this._paused = false
@@ -378,6 +379,8 @@ export class SimulatedService extends RobotService {
   _moveTo(next) {
     const dx = next[0] - this._state.x
     const dy = next[1] - this._state.y
+    // 本步的几何长度：直行 1、斜行 √2，电量在 tick 末尾按距离结算（V2.3.0）。
+    this._stepLen = Math.hypot(dx, dy)
     this._state.x = next[0]
     this._state.y = next[1]
     this._state.theta = this._directionToTheta(dx, dy)
@@ -395,11 +398,9 @@ export class SimulatedService extends RobotService {
    * @returns {number} 弧度值。
    */
   _directionToTheta(dx, dy) {
-    if (dx > 0) return 0
-    if (dx < 0) return Math.PI
-    if (dy > 0) return Math.PI / 2
-    if (dy < 0) return -Math.PI / 2
-    return this._state.theta
+    // 八邻域下方向可能同时有 x、y 分量，统一用 atan2 求真实朝向。
+    if (dx === 0 && dy === 0) return this._state.theta
+    return Math.atan2(dy, dx)
   }
 
   /**
@@ -439,7 +440,9 @@ export class SimulatedService extends RobotService {
    */
   _updateBatteryAndTemperature(moving) {
     if (moving) {
-      this._state.battery = Math.max(0.0, parseFloat((this._state.battery - BATTERY_MOVE_COST).toFixed(2)))
+      // 斜向一步按 √2 格计费，与后端 simulation_engine 口径一致（V2.3.0）。
+      const stepCost = BATTERY_MOVE_COST * (this._stepLen || 1)
+      this._state.battery = Math.max(0.0, parseFloat((this._state.battery - stepCost).toFixed(2)))
     } else {
       if (BATTERY_IDLE_COST > 0) {
         this._state.battery = Math.max(
@@ -645,8 +648,9 @@ export class SimulatedService extends RobotService {
       }
       const result = astar(this._map.grid, [this._state.x, this._state.y], goal)
       if (result.path.length > 0) {
-        this._state.path = result.path
-        this._patrol.pathRemain = Math.max(0, result.path.length - 1)
+        // 与后端 _plan_current_segment 保持一致：抽稀拐点后再逐格回填。
+        this._state.path = smoothAndExpand(this._map.grid, result.path)
+        this._patrol.pathRemain = Math.max(0, this._state.path.length - 1)
         return
       }
       this._addAnomaly('obstacle', `无法到达巡检点 [${goal[0]}, ${goal[1]}]，已跳过`, [
@@ -1334,10 +1338,73 @@ export class SimulatedService extends RobotService {
    * 计算 A* 路径。
    * @param {number[]} start - 起点 [x, y]。
    * @param {number[]} goal - 终点 [x, y]。
-   * @returns {Object} { path, visited_count, cost }。
+   * @returns {Object} { path, visited_count, cost, reachable, error }。
    */
   computePath(start, goal) {
     return astar(this._map.grid, start, goal)
+  }
+
+  /**
+   * 读取当前机器人状态快照（V2.3.0，供 Agent 指令层使用）。
+   * @returns {Object} 状态对象。
+   */
+  getState() {
+    return this._state
+  }
+
+  /**
+   * 主动返回充电点（V2.3.0）：与低电量自动返航复用同一套状态机。
+   */
+  goCharge() {
+    if (this._state.mode === 'empty') {
+      this._emitEvent('notice', { message: '电量耗尽，无法自行返回；请先搬回初始点' })
+      return
+    }
+    const target = this._map.charge_point
+    if (this._state.x === target[0] && this._state.y === target[1]) {
+      this._emitEvent('notice', { message: '机器人已在充电点上，无需返航' })
+      return
+    }
+    const result = astar(this._map.grid, [this._state.x, this._state.y], target)
+    if (result.path.length === 0) {
+      this._emitEvent('notice', {
+        message: `充电点 [${target[0]}, ${target[1]}] 当前不可达，请先清除沿途障碍`,
+      })
+      return
+    }
+    this._resumePatrolAfterCharge = this._patrol.running
+    this._state.mode = 'charging'
+    this._state.path = smoothAndExpand(this._map.grid, result.path)
+    this._paused = false
+    this._blocked = null
+    this._emitEvent('notice', {
+      message: `正在返回充电点 [${target[0]}, ${target[1]}]，预计 ${this._state.path.length - 1} 步`,
+    })
+    this._emitState()
+  }
+
+  /**
+   * 下发一条自然语言指令（V2.3.0，离线模式）。
+   *
+   * 与后端 Agent 使用同一套工具白名单与返回字段；破坏性操作同样需要
+   * confirm=true 二次确认。
+   *
+   * @param {string} text - 用户指令。
+   * @param {boolean} [confirm=false] - 是否已确认。
+   * @returns {Promise<Object>} Agent 返回体。
+   */
+  async sendAgentCommand(text, confirm = false) {
+    return handleAgentCommand(text, {
+      confirm,
+      service: this,
+      map: this._map,
+      limits: {
+        minMap: MIN_MAP_SIZE,
+        maxMap: MAX_MAP_SIZE,
+        maxGoals: 12,
+        clearCost: CLEAR_OBSTACLE_COST,
+      },
+    })
   }
 
   /**

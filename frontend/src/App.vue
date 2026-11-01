@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.2.1</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.3.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -154,6 +154,7 @@
           @start-patrol="onStartPatrol"
           @clear-blocked="onClearBlockedObstacle"
         />
+        <AgentPanel :service="service" :backend="usingBackend" @notify="onAgentNotify" @map-updated="onAgentMapUpdated" />
         <Joystick class="hidden" @move="onMove" />
         <StatusDashboard
           :robot="robot"
@@ -199,6 +200,7 @@
         @close="drawerOpen = false"
       >
         <div class="flex flex-col gap-3 max-h-[30vh] overflow-y-auto pr-1">
+          <AgentPanel :service="service" :backend="usingBackend" @notify="onAgentNotify" @map-updated="onAgentMapUpdated" />
           <RoutePlanPanel
             :plan="routePlan"
             :map-goals="map.goals"
@@ -325,6 +327,7 @@ import MapLibraryModal from './components/MapLibraryModal.vue'
 import MapDesigner from './components/MapDesigner.vue'
 import AuthModal from './components/AuthModal.vue'
 import DraggablePanel from './components/DraggablePanel.vue'
+import AgentPanel from './components/AgentPanel.vue'
 import { saveLocal } from './services/mapLibrary.js'
 import { astar } from './services/astar.js'
 
@@ -448,13 +451,11 @@ const hoverInfo = computed(() => {
   }
   const passable = map.grid[y][x] === 0
   if (!passable) return { passable: false, cost: null }
-  const result = astar(map.grid, [map.start[0], map.start[1]], [x, y])
-  if (!result.path || result.path.length === 0) return { passable: true, cost: null }
   const from = [robot.value.x, robot.value.y]
   const route = astar(map.grid, from, [x, y])
-  const steps = route.path && route.path.length > 0 ? route.path.length - 1 : null
-  if (steps === null) return { passable: true, cost: null }
-  return { passable: true, cost: (steps * 0.2).toFixed(1) }
+  if (!route.path || route.path.length === 0) return { passable: true, cost: null }
+  // V2.3.0：八邻域下斜向一步按 √2 格计费，直接用 A* 返回的几何代价换算。
+  return { passable: true, cost: (route.cost * 0.2).toFixed(1) }
 })
 
 // 移动端抽屉
@@ -1311,8 +1312,39 @@ function addToast(type, message) {
   }, 4000)
 }
 
-function toastClass(type) {
-  const classes = {
+/**
+ * 智能指令面板的通知回调（V2.3.0）。
+ *
+ * @param {{type?: string, message?: string}} payload - 面板抛出的通知。
+ */
+function onAgentNotify(payload) {
+  if (!payload || !payload.message) return
+  addToast(payload.type || 'notice', payload.message)
+}
+
+/**
+ * 智能指令面板执行后回传的最新地图（V2.3.0）。
+ *
+ * 指令可能改动了地图（清障 / 改格子 / 新建地图）；服务层已经生效，这里把
+ * 响应式地图同步过来，否则离线模式下画布还停在旧图。
+ *
+ * @param {Object} freshMap - 服务层重新拉取的地图。
+ */
+function onAgentMapUpdated(freshMap) {
+  if (!freshMap || !freshMap.grid) return
+  const sizeChanged = freshMap.width !== map.width || freshMap.height !== map.height
+  Object.assign(map, freshMap)
+  mapPresetKey.value = service.getPresetKey ? service.getPresetKey() : null
+  if (sizeChanged) {
+    snapshots.value = []
+    stopPlayback()
+    blockedCell.value = null
+    pendingCells.value = []
+    fitMap()
+  }
+}
+
+function toastClass(type) {  const classes = {
     low_battery: 'border-orange-500',
     obstacle: 'border-red-500',
     sensor_fault: 'border-purple-500',

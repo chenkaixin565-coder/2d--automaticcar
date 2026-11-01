@@ -42,3 +42,16 @@ services:
       # 限流（V2.2.0）：每客户端每分钟请求数，0 表示关闭。
       - key: RATE_LIMIT_PER_MINUTE
         value: "240"
+      # 异常检测（V2.3.0）：auto = 有 numpy/scikit-learn 就用 IsolationForest，否则规则基线。
+      # Render 默认镜像不装 ML 依赖（构建快、冷启动快），所以线上会显示 RuleAnomalyDetector；
+      # 想在线上看到 ML，需把 Dockerfile 的 INSTALL_ML 构建参数改成 true 后重新部署。
+      - key: ANOMALY_STRATEGY
+        value: "auto"
+      # Agent（V2.3.0）：免费实例没有 GPU，跑不动本地 7B 模型，线上保持规则解析。
+      # 本地答辩时在自己的电脑上启动 Ollama，再把下面两行取消注释并填地址。
+      - key: AGENT_LLM_ENABLED
+        value: "false"
+      # - key: AGENT_OLLAMA_URL
+      #   value: "http://127.0.0.1:11434"
+      # - key: AGENT_OLLAMA_MODEL
+      #   value: "qwen2.5:7b"

@@ -17,10 +17,19 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
+# 默认只装轻量依赖（镜像约 150MB）；机器学习异常检测按需开启：
+#   docker build --build-arg INSTALL_ML=true -f deploy/Dockerfile .
+# 开启后多约 250MB，冷启动稍慢，但 /health 的 anomaly_strategy 会变成 MLAnomalyDetector。
+ARG INSTALL_ML=false
+
 WORKDIR /app
 
-COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/requirements.txt backend/requirements-ml.txt ./
+RUN if [ "$INSTALL_ML" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-ml.txt; \
+    else \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 COPY backend/ ./backend/
 # 运行时读取 shared/simulation-rules.json 与 shared/default-map.json

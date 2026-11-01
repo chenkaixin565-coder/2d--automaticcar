@@ -12,10 +12,14 @@
 
 异常检测采用**双策略并行、配置切换**的设计：
 
-- **规则基线（默认）**：阈值法，作为兜底与对照，逻辑直观、零冷启动。
+- **规则基线（兜底）**：阈值法，逻辑直观、零冷启动；任何环境都能跑。
 - **机器学习（IsolationForest）**：对滑动窗口内的多维传感数据做在线异常打分，能发现规则难以覆盖的"组合型异常"（例如温度略高 + 距离抖动 + 电量缓降同时发生）。
 
 两条策略都输出统一结构的 `AnomalyEvent`，通过 WebSocket 的 `anomaly` 帧即时推送到前端。
+
+V2.3.0 起默认策略为 `auto`：**装了 numpy/scikit-learn 就启用 IsolationForest，没装就静默回退规则基线**。
+这样"代码里有 ML"和"线上真的在跑 ML"是同一件事，同时不强制所有部署都装 200MB 的科学计算依赖。
+`GET /api/v1/health` 的 `anomaly_strategy` 字段会如实返回当前生效的检测器类名，线上核对不用猜。
 
 ---
 
@@ -69,7 +73,13 @@ tick()
   └─ 输出 AnomalyEvent[] → WebSocket 推送
 ```
 
-通过配置项 `ANOMALY_STRATEGY=rule|ml` 切换。默认 `rule`，保证开箱行为与验收基线一致；演示机器学习效果时切到 `ml`。
+通过配置项 `ANOMALY_STRATEGY=auto|rule|ml` 切换。默认 `auto`：依赖存在就用 ML，否则用规则；
+`rule` 强制规则基线，`ml` 强制 ML（缺依赖时降级为规则并打 WARNING）。
+演示机器学习效果时，装好 `requirements-ml.txt` 后直接看 `/health` 里的 `anomaly_strategy` 是否为
+`MLAnomalyDetector` 即可。
+
+> Docker 基础镜像默认**不装** ML 依赖（保持镜像轻量），所以 Render 线上是规则基线；
+> 需要带 ML 的镜像时用 `docker build --build-arg INSTALL_ML=true ...`（见 `deploy/Dockerfile`）。
 
 ---
 
@@ -118,7 +128,8 @@ tick()
 - **IsolationForest** 擅长"分布内的组合型异常"：单个读数都还在合理量程，但组合在正常工况下几乎不出现（如三向探头同时贴低、温度与距离背离）。这类故障难以用单阈值表达，正是孤立森林的靶子。
 - 实测也印证了边界：对单维外推故障，IsolationForest 召回仅约 20%（割裂点来自训练范围，对外推不敏感），此时应信赖规则基线。
 
-因此默认策略为 `rule` 兜底，`ml` 作为能力展示与组合型异常补充。
+因此默认策略为 `auto`：有 ML 依赖时启用 IsolationForest（覆盖组合型异常），没有时用规则兜底；
+两者互补而不是二选一。线上环境可通过 `ANOMALY_STRATEGY=rule` 显式固定为规则基线。
 
 ---
 
@@ -138,7 +149,7 @@ for e in events:
     self._emit_anomaly(e)
 ```
 
-`create_detector` 在 `rule` 与 `ml` 之间返回不同实现，对调用方透明。ML 策略的冷启动采集、增量重训、滑动窗口全部封装在检测器内部，主循环无感知。
+`create_detector` 在 `auto` / `rule` / `ml` 之间返回不同实现，对调用方透明。ML 策略的冷启动采集、增量重训、滑动窗口全部封装在检测器内部，主循环无感知。
 
 ---
 

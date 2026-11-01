@@ -79,7 +79,7 @@ class Settings:
     )
 
     # ---------- 异常检测 ----------
-    anomaly_strategy: str = os.getenv("ANOMALY_STRATEGY", "rule")
+    anomaly_strategy: str = os.getenv("ANOMALY_STRATEGY", "auto")
     anomaly_history_max: int = _env_int(
         "ANOMALY_HISTORY_MAX", RULES["maps"]["anomaly_history_max"]
     )
@@ -112,6 +112,17 @@ class Settings:
     trust_proxy_headers: bool = _env_bool("TRUST_PROXY_HEADERS", True)
     # 只读展示模式：开启后即使没有密钥也禁止一切写操作（适合公网演示）。
     readonly_mode: bool = _env_bool("READONLY_MODE", False)
+
+    # ---------- Agent 指令层（V2.3.0） ----------
+    # 默认关闭大模型，只用内置规则解析：不依赖任何外部服务，离线也能演示。
+    agent_llm_enabled: bool = _env_bool("AGENT_LLM_ENABLED", False)
+    # 本地 Ollama 服务地址与模型名（仅 agent_llm_enabled=True 时使用）。
+    agent_ollama_url: str = os.getenv("AGENT_OLLAMA_URL", "http://127.0.0.1:11434")
+    agent_ollama_model: str = os.getenv("AGENT_OLLAMA_MODEL", "qwen2.5:7b")
+    # 大模型调用超时（秒）：超时立即回退到规则解析，绝不阻塞界面。
+    agent_llm_timeout_s: float = _env_float("AGENT_LLM_TIMEOUT_S", 6.0)
+    # 一句话最多允许下发的巡检点个数，防止模型生成超长任务。
+    agent_max_goals: int = _env_int("AGENT_MAX_GOALS", 12)
 
     @property
     def auth_mode(self) -> str:

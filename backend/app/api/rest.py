@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.map import GridMap
 from app.models.robot import (
+    AgentCommand,
     CellEditCommand,
     ClearObstacleCommand,
     MapSaveCommand,
@@ -30,6 +31,7 @@ from app.models.robot import (
     PlanGoalCommand,
 )
 from app.services import map_store
+from app.services.agent import AgentService
 from app.services.simulation_engine import SimulationEngine
 
 logger = logging.getLogger("api.rest")
@@ -43,6 +45,30 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
     :return: 配置完成的 APIRouter。
     """
     router = APIRouter(prefix="/api/v1")
+
+    # Agent 指令层（V2.3.0）：执行结果同步广播给所有在线客户端。
+    agent_service = AgentService(
+        engine, notify=lambda frame: engine.emit_frame(frame)
+    )
+
+    @router.post("/agent/command", summary="自然语言 Agent 指令")
+    async def agent_command(command: AgentCommand) -> dict:
+        """
+        把一句自然语言指令翻译成白名单工具调用并执行（V2.3.0）。
+
+        破坏性操作（清障 / 改地图 / 复位 / 新建地图）第一次调用只返回
+        need_confirm=True 与说明，前端确认后带 confirm=true 再发一次才执行。
+
+        :param command: {'text': str, 'confirm': bool}。
+        :return: {understood, tool, args, source, executed, need_confirm, ok,
+                  message, result, latency_ms}。
+        """
+        return await agent_service.handle(command.text, command.confirm)
+
+    @router.get("/agent/tools", summary="Agent 工具白名单")
+    async def agent_tools() -> list[dict]:
+        """返回 Agent 可调用的工具清单（名称、说明、参数、示例）。"""
+        return AgentService.describe_tools()
 
     @router.get("/map", summary="获取当前地图")
     async def get_map() -> dict:
@@ -272,6 +298,11 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
     async def robot_carry_home() -> dict:
         """电量耗尽后把机器人搬回初始点并恢复满电。"""
         return engine.carry_home()
+
+    @router.post("/robot/charge", summary="主动返回充电点")
+    async def robot_charge() -> dict:
+        """让机器人主动规划回充电点的路线（V2.3.0，Agent「去充电」工具）。"""
+        return engine.go_charge()
 
     @router.get("/robot/trail", summary="获取机器人轨迹")
     async def robot_trail() -> dict:

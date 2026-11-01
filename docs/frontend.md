@@ -144,3 +144,39 @@ frontend/
 导入仓库后设置 Framework Preset 为 `Vite`，Build Command 为 `npm run build`，Output Directory 为 `dist`，即可自动部署。
 
 > 注意：测试阶段使用的临时托管链接仅用于功能验证，正式展示请使用自己的仓库或域名。
+
+---
+
+## 11. V2.3.0 增量：智能指令面板
+
+### 11.1 数据流
+
+```
+AgentPanel.vue
+  └─ service.sendAgentCommand(text, confirm)
+       ├─ RemoteService  → POST /api/v1/agent/command（后端解析 + 校验 + 执行）
+       └─ SimulatedService → services/agent.js（本地规则解析 + 校验 + 执行）
+```
+
+两种实现返回**同一套字段**：`understood / tool / args / source / executed /
+need_confirm / ok / message / result / latency_ms`。组件只负责渲染，不参与解析。
+
+### 11.2 为什么离线也要一套解析器
+
+GitHub Pages 是纯静态托管，没有后端。若面板只在有后端时可用，公网演示就少了
+最亮的功能。因此把"工具白名单 + 参数校验 + 文案"在 JS 里复刻一份，工具集合与
+Python 版逐项对齐（`status / plan_route / start_patrol / stop_patrol / go_charge /
+move / clear_obstacle / set_cell / reset / new_map`）。
+
+### 11.3 交互约定
+
+- 输入框回车即发送，发送期间禁用避免重复提交；
+- 最近 6 条对话保留在面板内，成功绿色、失败琥珀色；
+- 破坏性操作出现「确认执行 / 取消」，未确认前不改任何状态；
+- 失败提示同时通过 `notify` 事件冒泡到全局 Toast，不会"点了没反应"。
+
+### 11.4 A\* 的前端变化
+
+`services/astar.js` 与后端同步升级为八邻域：octile 启发、斜向代价 √2、禁止斜穿
+墙角，另导出 `lineOfSight / smoothPath / expandPath / smoothAndExpand` 供本地仿真器
+平滑路径。悬停格耗电估算改为直接用 `route.cost`（斜向按 √2 折算），与后端一致。

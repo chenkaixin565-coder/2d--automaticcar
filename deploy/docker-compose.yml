@@ -6,7 +6,10 @@ services:
     build:
       context: ..            # 仓库根目录（含 frontend/ 与 backend/）
       dockerfile: deploy/Dockerfile
-    image: irm-system:1.0
+      args:
+        # 需要机器学习异常检测时改为 "true"（镜像会大了约 250MB）
+        INSTALL_ML: "${INSTALL_ML:-false}"
+    image: irm-system:2.3.0
     ports:
       - "${PORT:-8000}:${PORT:-8000}"
     environment:
@@ -14,4 +17,11 @@ services:
       - TICK_INTERVAL_MS=${TICK_INTERVAL_MS:-200}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOW_BATTERY_THRESHOLD=${LOW_BATTERY_THRESHOLD:-20}
+      # 异常检测：auto = 有 scikit-learn 就启用，否则规则基线
+      - ANOMALY_STRATEGY=${ANOMALY_STRATEGY:-auto}
+      # Agent：默认规则解析；本地演示大模型时可改为 true 并指向宿主机 Ollama
+      - AGENT_LLM_ENABLED=${AGENT_LLM_ENABLED:-false}
+      - AGENT_OLLAMA_URL=${AGENT_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # 容器内访问宿主机的 Ollama
     restart: unless-stopped

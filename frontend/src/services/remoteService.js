@@ -536,6 +536,36 @@ export class RemoteService extends RobotService {
   }
 
   /**
+   * 主动返回充电点（V2.3.0）。
+   */
+  goCharge() {
+    if (!this._sendCommand('go_charge', {})) {
+      this._rest('POST', '/api/v1/robot/charge')
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 读取最近一次 state 帧缓存（V2.3.0）。
+   * @returns {Object} 机器人状态。
+   */
+  getState() {
+    return this._state
+  }
+
+  /**
+   * 下发自然语言指令（V2.3.0）：整句交给后端 Agent 解析执行。
+   *
+   * @param {string} text - 用户指令。
+   * @param {boolean} [confirm=false] - 破坏性操作二次确认。
+   * @returns {Promise<Object>} 后端返回的 Agent 结果。
+   */
+  async sendAgentCommand(text, confirm = false) {
+    return this._rest('POST', '/api/v1/agent/command', { text, confirm })
+  }
+
+  /**
    * 同步控制类 REST 响应体到本地缓存：state 数据 + 服务端权威地图 + 最新规划。
    * 后端 _command_payload() 返回 { ...state_dict()["data"], "map": ... }，
    * 其中地图是清障后的权威版本，必须覆盖本地缓存，否则界面障碍不消失。

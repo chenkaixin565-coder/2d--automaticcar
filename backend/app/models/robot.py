@@ -92,3 +92,14 @@ class NewMapCommand(BaseModel):
 
     width: int = Field(30, ge=10, le=60, description="地图宽度（列数）")
     height: int = Field(20, ge=10, le=60, description="地图高度（行数）")
+
+
+class AgentCommand(BaseModel):
+    """自然语言 Agent 指令（V2.3.0）。
+
+    前端把用户的一句话原样提交，解析、校验与执行全部在后端完成；
+    confirm=True 表示用户已在界面上确认过破坏性操作。
+    """
+
+    text: str = Field(..., min_length=1, max_length=200, description="用户指令原文")
+    confirm: bool = Field(False, description="破坏性操作二次确认：True 才真正执行")

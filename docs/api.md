@@ -1,8 +1,7 @@
 # 接口文档（REST + WebSocket）
 
-> 适用版本：**V2.2.1**
-> 生成方式：以线上服务 `GET /openapi.json` 为准（27 个路径、31 个操作、11 个数据模型），
-> 结合 `backend/app/api/rest.py` 与 `websocket.py` 的返回实现整理。接口有变动时以代码为准。
+> 适用版本：**V2.3.0**
+> 整理依据：`backend/app/api/rest.py` 与 `websocket.py` 的实际实现；接口有变动时以代码为准。
 > 在线可交互版：`https://irm-sim-2d.onrender.com/docs`
 
 ---
@@ -130,6 +129,7 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 | POST | `/api/v1/robot/clear-nearest-pending` | 清除最近的待清障障碍 | 是 |
 | GET | `/api/v1/robot/pending` | 待清障记录 | 否 |
 | POST | `/api/v1/robot/carry-home` | 空电后搬回起点 | 是 |
+| POST | `/api/v1/robot/charge` | 主动返回充电点（V2.3.0） | 是 |
 | GET | `/api/v1/robot/trail` | 已走过的轨迹，返回 `{"trail": [[x,y], ...]}` | 否 |
 
 移动请求 `dx/dy` 取值 **-1 / 0 / 1**。响应为机器人状态：
@@ -158,13 +158,20 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 | POST | `/api/v1/plan/cancel` | 取消预览 | 是 |
 | POST | `/api/v1/plan/execute` | 按当前规划批量清障 | 是 |
 
-`/path` 返回：
+`/path` 返回（V2.3.0 起为八邻域，斜向一步代价 √2）：
 
 ```json
-{ "path": [[1,1],[1,2],[1,3],[1,4],[1,5],[2,5],[3,5],[4,5],[5,5]], "visited_count": 24, "cost": 8 }
+{
+  "path": [[1,1],[2,2],[3,3],[4,4],[5,5]],
+  "visited_count": 5,
+  "cost": 5.656854249492381,
+  "reachable": true,
+  "error": null
+}
 ```
 
-`start` / `goal` 必须是 `x,y` 格式，否则 **422**；越界或障碍起终点返回空路径。
+`start` / `goal` 必须是 `x,y` 格式，否则 **422**；越界或障碍起终点返回空路径，
+并用 `error` 给出原因：`out_of_bounds` / `start_blocked` / `goal_blocked` / `unreachable` / `empty_map`。
 
 `/plan` 请求 `{"goal": [5, 5]}`，返回：
 
@@ -242,9 +249,13 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 健康检查示例：
 
 ```json
-{ "status": "ok", "version": "V2.2.1", "tick_errors": 0, "last_tick_age_s": 0.1,
-  "tick_alive": true, "auth_mode": "operator-key", "rate_limit_per_minute": 240, "ws_clients": 1 }
+{ "status": "ok", "version": "V2.3.0", "tick_errors": 0, "last_tick_age_s": 0.1,
+  "tick_alive": true, "auth_mode": "operator-key", "rate_limit_per_minute": 240,
+  "ws_clients": 1, "anomaly_strategy": "MLAnomalyDetector", "agent_mode": "rule" }
 ```
+
+`anomaly_strategy` 为实际生效的检测器类名（`RuleAnomalyDetector` / `MLAnomalyDetector`），
+`agent_mode` 为 `rule`（内置规则解析）或 `ollama`（接本地大模型）。
 
 `/metrics` 关键指标：`irm_uptime_seconds`、`http_requests_total{method,status}`、
 `rate_limited_total`、`auth_rejected_total`、`irm_ws_clients`、`irm_engine_battery_percent`、
@@ -266,6 +277,7 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 | `notice` | 事件触发 | 操作提示（规划完成、清障成功等） |
 | `blocked` | 事件触发 | 巡检遇阻，带 `cell / message / battery / clear_cost` |
 | `empty` | 事件触发 | 电量耗尽 |
+| `agent` | 指令执行后 | Agent 执行结果（字段同第 10 节返回体） |
 | `auth_required` | 指令被拒时 | `{code, readonly, message}`，前端据此弹密钥框 |
 
 ### 9.2 客户端 → 服务端
@@ -276,7 +288,10 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 
 可用 `action`：`move`、`patrol_start`、`patrol_stop`、`patrol_decision`、`reset`、`restart`、
 `resolve_fault`、`plan`、`cancel_plan`、`clear_obstacle`、`clear_nearest_pending`、
-`execute_plan_clear`、`carry_home`、`set_cell`、`new_map`。
+`execute_plan_clear`、`carry_home`、`go_charge`、`set_cell`、`new_map`。
+
+自然语言指令不走 WebSocket：用 `POST /api/v1/agent/command`（需要写权限），
+执行完成后服务端会把 `agent` 帧广播给所有在线客户端。
 
 ### 9.3 关闭码
 
@@ -289,10 +304,69 @@ WebSocket 的连接本身允许只读接入（会收到 `state` 帧）；下发�
 
 ---
 
-## 10. 版本差异
+## 10. Agent 指令层（V2.3.0）
+
+把一句中文翻成一次受控的工具调用。解析器默认是内置规则（离线可用），设置
+`AGENT_LLM_ENABLED=true` 后改为本地 Ollama（失败自动回退规则）。
+
+| 方法 | 路径 | 说明 | 写权限 |
+|---|---|---|---|
+| POST | `/api/v1/agent/command` | 执行一条自然语言指令 | 是 |
+| GET | `/api/v1/agent/tools` | 工具白名单（名称、说明、参数、示例） | 否 |
+
+请求：
+
+```json
+{ "text": "把 3,4 的障碍清掉", "confirm": false }
+```
+
+返回：
+
+```json
+{
+  "text": "把 3,4 的障碍清掉",
+  "understood": true,
+  "tool": "clear_obstacle",
+  "args": { "cell": [3, 4] },
+  "source": "rule",
+  "executed": false,
+  "need_confirm": true,
+  "ok": false,
+  "message": "这条指令会修改现场状态：清除指定格子的障碍（清除 [3, 4] 的障碍，扣 5% 电量）。确认执行吗？",
+  "result": null,
+  "latency_ms": 0.3
+}
+```
+
+- `source`：`rule`（规则解析）/ `llm`（本地大模型）/ `rule-fallback`（大模型失败回退）；
+- `need_confirm=true` 时**尚未执行**，前端确认后带 `"confirm": true` 再发一次；
+  清障、改格子、复位、新建地图四类破坏性操作都必须确认；
+- `executed` 表示是否真的执行；`ok` 表示执行是否成功；
+- 越界坐标、非障碍格、电量不足、边界编辑等校验失败时 `understood=true` 但
+  `executed=false`，`message` 是给人看的原因，HTTP 状态码仍是 200。
+
+可用工具：
+
+| 工具 | 参数 | 破坏性 | 说明 |
+|---|---|---|---|
+| `status` | — | 否 | 位置、电量、模式、巡检进度 |
+| `plan_route` | `goal:[x,y]` | 否 | 只生成路线预览，不移动 |
+| `start_patrol` | `goals?:[[x,y]]` | 否 | 开始巡检，缺省用地图巡检点 |
+| `stop_patrol` | — | 否 | 停止巡检 |
+| `go_charge` | — | 否 | 返回充电点 |
+| `move` | `dx,dy` | 否 | 手动移动一格 |
+| `clear_obstacle` | `cell:[x,y]` | 是 | 清障，扣 5% 电量 |
+| `set_cell` | `x,y,value` | 是 | 编辑地图格子（0/1/2） |
+| `reset` | — | 是 | 复位并恢复满电 |
+| `new_map` | `width,height` | 是 | 新建空白地图 |
+
+---
+
+## 11. 版本差异
 
 | 版本 | 变更 |
 |---|---|
+| V2.3.0 | 新增 `/agent/command`、`/agent/tools`、`/robot/charge`；`/path` 改八邻域并返回 `reachable` / `error`；新增 `agent` 帧与 `go_charge` 指令 |
 | V2.2.1 | WS 支持只读接入；新增 `auth_state` 帧；指令级鉴权 |
 | V2.2.0 | 新增操作密钥、限流、`/metrics`、共享规则 |
 | V2.1 | 地图库、单格编辑、固定屏障 |

@@ -1,15 +1,29 @@
-# 智能巡检机器人二维仿真系统 V2.2.1
+# 智能巡检机器人二维仿真系统 V2.3.0
 
 > 大学生社团培训班结业项目 —— 全栈版（FastAPI 后端 + Vue 前端，单容器部署）。
+> V2.3.0 加了「自然语言 Agent」：说一句话就能让机器人规划、巡检、回充、清障，并支持可选接入本地大模型（Ollama）；同时把 A* 升级为八邻域 + 视线法平滑，异常检测默认改为「有依赖就用机器学习」。
 > V2.0 重做了交互（规划=预览 / 遇阻=暂停询问 / 尾迹可隐藏）并修复 22 项一致性缺陷；V2.1 增加地图库、地图设计器与固定屏障，并把"清障"拆成免费的编辑擦除与扣电的机器人清障；V2.1.1 修掉预览缩放过大、关闭预览后视角卡在角落，并把地图库入口补到移动端。
 
 ## 项目简介
 
-基于 Web 的二维栅格巡检机器人仿真系统：浏览器中以二维数组渲染栅格地图，一台虚拟巡检机器人在地图上运动。用户可手动遥控，也可下发自动巡检任务；机器人用 A* 算法自动寻路避障，虚拟传感器（三向超声波、电量、温度）持续采集数据，规则与机器学习（IsolationForest）双策略做异常检测，异常事件经 WebSocket 实时推送到前端。
+基于 Web 的二维栅格巡检机器人仿真系统：浏览器中以二维数组渲染栅格地图，一台虚拟巡检机器人在地图上运动。用户可手动遥控，也可用一句话下发指令；机器人用八邻域 A* 自动寻路避障，虚拟传感器（三向超声波、电量、温度）持续采集数据，规则与机器学习（IsolationForest）双策略做异常检测，异常事件经 WebSocket 实时推送到前端。
 
-前端为 Vue 3 + Canvas，后端为 FastAPI（仿真引擎、A*、传感器、异常检测、巡检调度），后端同时托管前端静态页，**一个容器即可完整运行**。
+前端为 Vue 3 + Canvas，后端为 FastAPI（仿真引擎、A*、传感器、异常检测、巡检调度、Agent 指令层），后端同时托管前端静态页，**一个容器即可完整运行**。
 
 ## 功能特性
+
+### V2.3.0 新增（自然语言 Agent + 八邻域 A*）
+
+- **自然语言指令层**：右侧面板「智能指令」输入一句话（"去 5,5 巡检"、"回充电点"、"把 3,4 的障碍清掉"），系统解析成白名单工具调用后执行，并回一句人话；解析来源（规则 / 本地大模型）与耗时都显示在面板里
+- **工具白名单 + 参数校验**：模型只能从 10 个工具里选，坐标越界、目标不是障碍、电量不足、编辑边界等都在执行前拦下，不会出现"模型说拆哪就拆哪"
+- **破坏性操作二次确认**：清障、改格子、复位、新建地图第一次只返回待确认，用户在界面上点「确认执行」才真正生效
+- **可选本地大模型**：`AGENT_LLM_ENABLED=true` 后接本地 Ollama（默认 `qwen2.5:7b`），6 秒超时或返回非法 JSON 自动回退规则解析，公网演示不配模型也能用
+- **八邻域 A\***：octile 启发、斜向代价 √2、禁止斜穿墙角；200×200 地图平均 6.3ms，路径比四邻域短约 13%
+- **视线法路径平滑**：Bresenham 超覆盖检测通视，抽稀冗余拐点后再逐格回填，机器人仍逐格执行、电量与步数不失真
+- **BFS 对照实现回归**：`bfs.py` + `tools/benchmark_paths.py`，一条命令复现"A\* 只扩展 BFS 的 15%"的对照实验
+- **四邻域口径保留**：`GET /path?diagonal=false` 可切回四邻域，用于课堂对比
+- **异常检测默认 `auto`**：装了 numpy/scikit-learn 就启用 IsolationForest，没装静默回退规则；`/health` 的 `anomaly_strategy` 如实报告当前生效的检测器
+- **CI 落库**：`.github/workflows/ci.yml`（后端 ruff + pytest、前端 eslint + vitest + build、Docker 构建并探活）
 
 ### V2.2.1 修复
 
@@ -81,8 +95,11 @@
 ```mermaid
 graph TD
     Browser["浏览器 (Vue3 + Canvas)"] -->|REST + WebSocket| Backend["FastAPI 后端 :8000"]
+    Browser -->|自然语言 /agent/command| Agent["Agent 指令层"]
+    Agent -->|白名单 + 校验 + 二次确认| Backend
+    Agent -.->|可选| LLM["本地 Ollama (7B)"]
     Backend --> Engine["仿真引擎 SimulationEngine"]
-    Engine --> AStar["A* 寻路"]
+    Engine --> AStar["A* 八邻域 + 视线平滑"]
     Engine --> Sensors["虚拟传感器 Sensors"]
     Engine --> Anomaly["异常检测 (规则 + IsolationForest)"]
     Engine --> Patrol["巡检调度 Patrol"]
@@ -93,10 +110,12 @@ graph TD
 
 - 前端：Vue 3 + Vite + Tailwind CSS + 原生 Canvas
 - 后端：Python 3.11 + FastAPI + Uvicorn
-- 算法 / 数据：numpy + scikit-learn（IsolationForest）
-- 实时通信：WebSocket（状态帧 200ms、异常/通知事件帧）
+- 算法：A\*（八邻域 + octile 启发 + 视线法平滑）、BFS 对照、最近邻调度
+- 数据 / AI：numpy + scikit-learn（IsolationForest）；可选本地 Ollama（Agent 解析）
+- 实时通信：WebSocket（状态帧 200ms、异常/通知/Agent 事件帧）
 - 规则来源：`shared/simulation-rules.json` + `shared/default-map.json`（前后端共用）
 - 部署：Docker 多阶段构建（Node 构建前端 → Python 托管）+ docker-compose + Render 蓝图（`render.yaml` 一键公网部署）
+- 质量：后端 123 例 pytest + ruff、前端 89 例 vitest + eslint，GitHub Actions 三阶段流水线
 
 ## 快速开始
 
@@ -112,6 +131,7 @@ docker compose -f deploy/docker-compose.yml up --build
 ```bash
 # 1. 后端
 cd backend && pip install -r requirements.txt
+#    需要机器学习异常检测时再装：pip install -r requirements-ml.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # 2. 前端（新终端）
@@ -138,6 +158,34 @@ cd frontend && npm install && npm run dev
 
 > 仅需前端公网页时，也可单独使用 GitHub Pages（仓库 `gh-pages` 分支）：Pages 为纯静态托管，跑不了后端，页面会以内置本地仿真器运行；如需接入远程后端，在链接后加 `?backend=https://后端地址` 即可（跨源需在后端环境变量 `CORS_ORIGINS` 中放行 Pages 域名）。
 
+## 用自然语言控制（V2.3.0）
+
+页面右侧面板点「智能指令」，直接输入：
+
+```
+现在状态怎么样
+去 5,5 巡检
+规划到 15,8 的路线
+把 12,8 的障碍清掉     ← 会先要求确认
+回充电点
+停止巡检
+```
+
+默认用内置中文规则解析，不需要任何模型。想接本地大模型：
+
+```bash
+# 1. 安装并拉取模型（RTX 5060 8GB 可跑 7B 4bit）
+ollama pull qwen2.5:7b
+
+# 2. 启动后端时打开开关
+AGENT_LLM_ENABLED=true AGENT_OLLAMA_URL=http://127.0.0.1:11434 \
+AGENT_OLLAMA_MODEL=qwen2.5:7b uvicorn app.main:app --port 8000
+```
+
+模型超时或返回非法 JSON 会自动回退规则解析，不会把界面卡死；`/health` 的
+`agent_mode` 会显示当前是 `rule` 还是 `ollama`。工具白名单、校验规则与演示脚本见
+[docs/agent.md](docs/agent.md)。
+
 ## 访问控制与限流（V2.2.0）
 
 默认是**开放演示模式**：不配置密钥，任何访问者都能操作（启动日志会打一条 WARNING）。要演示"只有持钥者能改"，设置环境变量即可：
@@ -163,15 +211,32 @@ curl -X POST localhost:8000/api/v1/robot/move \
 
 边界说明：限流计数与指标都在**进程内存**，单实例有效；多实例部署需要 Redis 等共享存储，本项目刻意没有引入。密钥不要写进 `VITE_*` 变量——那会被打进公开 JS。
 
+## 其他运行配置（V2.3.0）
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `ANOMALY_STRATEGY` | `auto` | `auto` = 有 numpy/scikit-learn 就用 IsolationForest，否则规则基线；`rule` / `ml` 为强制指定 |
+| `AGENT_LLM_ENABLED` | `false` | 是否用本地大模型解析自然语言（关闭时用内置规则） |
+| `AGENT_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama 服务地址（不向第三方转发） |
+| `AGENT_OLLAMA_MODEL` | `qwen2.5:7b` | 模型名；8GB 显存建议 7B 4bit 量化版 |
+| `AGENT_LLM_TIMEOUT_S` | `6` | 大模型超时秒数，超时自动回退规则解析 |
+| `AGENT_MAX_GOALS` | `12` | 一句话最多能下发的巡检点个数 |
+
+> Docker 镜像默认不装 ML 依赖（保持轻量）。需要带 ML 的镜像：
+> `docker build --build-arg INSTALL_ML=true -f deploy/Dockerfile .`
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/health` | 健康检查（含 `auth_mode` / `ws_clients`） |
+| GET | `/api/v1/health` | 健康检查（含 `auth_mode` / `ws_clients` / `anomaly_strategy` / `agent_mode`） |
 | GET | `/metrics` | Prometheus 文本指标（V2.2.0） |
 | GET | `/api/v1/map` | 获取当前地图 |
 | PUT | `/api/v1/map` | 更新地图 |
-| GET | `/api/v1/path?start=x,y&goal=x,y` | A* 求路径 |
+| GET | `/api/v1/path?start=x,y&goal=x,y` | A* 求路径（八邻域；`&diagonal=false` 切四邻域） |
+| POST | `/api/v1/agent/command` | 自然语言指令：解析 → 校验 → 执行（V2.3.0） |
+| GET | `/api/v1/agent/tools` | Agent 工具白名单（V2.3.0） |
+| POST | `/api/v1/robot/charge` | 主动返回充电点（V2.3.0） |
 | GET | `/api/v1/sensors/latest` | 最新传感器读数 |
 | GET | `/api/v1/events/anomalies` | 异常事件列表 |
 | GET | `/api/v1/patrol/status` | 巡检任务状态 |
@@ -193,9 +258,9 @@ curl -X POST localhost:8000/api/v1/robot/move \
 | DELETE | `/api/v1/maps/{id}` | 删除云端地图（V2.1） |
 | WS  | `/api/v1/ws` | 状态帧（200ms）/ 异常·通知事件帧 / 指令下行 |
 
-WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"patrol_decision"|"reset"|"restart"|"resolve_fault"|"plan"|"clear_obstacle"|"clear_nearest_pending"|"execute_plan_clear"|"carry_home"|"cancel_plan"|"new_map", payload:{...}}`。
+WebSocket 指令：`{type:"command", action:"move"|"patrol_start"|"patrol_stop"|"patrol_decision"|"reset"|"restart"|"resolve_fault"|"plan"|"clear_obstacle"|"clear_nearest_pending"|"execute_plan_clear"|"carry_home"|"go_charge"|"cancel_plan"|"new_map", payload:{...}}`。
 
-WebSocket 帧类型：`state`（200ms 状态帧，含 `paused` / `blocked` / `pending`）、`anomaly`、`notice`、`blocked`（巡检遇阻，前端弹窗）、`empty`（电量耗尽）。
+WebSocket 帧类型：`state`（200ms 状态帧，含 `paused` / `blocked` / `pending`）、`anomaly`、`notice`、`blocked`（巡检遇阻，前端弹窗）、`empty`（电量耗尽）、`auth_state`（连接权限）、`agent`（自然语言指令执行结果）。
 
 ## 目录结构
 
@@ -205,19 +270,21 @@ project-root/
 │   ├── simulation-rules.json
 │   └── default-map.json
 ├── frontend/                # Vue 前端工程
-│   ├── src/services/        # 数据服务层（RobotService 接口 + Simulated/Remote 实现 + routePlanner 穿障规划）
-│   └── src/components/      # 地图、控制、状态等组件
+│   ├── src/services/        # 数据服务层（RobotService 接口 + Simulated/Remote 实现 + routePlanner + agent 本地解析）
+│   └── src/components/      # 地图、控制、状态、智能指令（AgentPanel）等组件
 ├── backend/                 # FastAPI 后端
 │   ├── app/
-│   │   ├── algorithms/      # A* 寻路
-│   │   ├── services/        # 仿真引擎、传感器、异常检测、巡检调度、路线规划
+│   │   ├── algorithms/      # A*（八邻域 + 四邻域）、BFS 对照、视线法平滑
+│   │   ├── services/        # 仿真引擎、传感器、异常检测、巡检调度、路线规划、Agent 指令层
 │   │   ├── api/             # REST 与 WebSocket 路由
 │   │   └── core/            # 配置、常量、共享规则加载、限流、指标、鉴权
+│   ├── tools/               # benchmark_paths.py 路径规划基准
 │   ├── static/dist/         # 前端构建产物（由 Docker 多阶段注入）
 │   └── tests/               # pytest 单元测试
 ├── deploy/                  # Dockerfile 与 docker-compose.yml
+├── .github/workflows/       # CI：后端 / 前端 / Docker 三阶段
 ├── render.yaml              # Render 一键部署蓝图（全栈公网）
-├── docs/                    # 设计文档与部署指南
+├── docs/                    # api.md、algorithm.md、agent.md、ai.md、frontend.md、deploy.md
 ├── CHANGELOG.md             # 版本更新日志
 ├── run.sh / run.bat         # 非容器降级启动脚本
 └── README.md
@@ -226,19 +293,30 @@ project-root/
 ## 测试
 
 ```bash
-# 后端：ruff 检查 + pytest
+# 后端：ruff 检查 + pytest（123 例）
 cd backend
-pip install ruff pytest pytest-asyncio
+pip install -r requirements-ml.txt pytest httpx ruff
 ruff check .
 pytest tests/ -v
 
-# 前端：lint + 单元测试 + 构建
+# 前端：lint + 单元测试（89 例）+ 构建
 cd frontend
 npm ci
 npm run lint && npm test && npm run build
 ```
 
-CI：仓库内置 `.github/workflows/ci.yml`（push / PR 到 main 时自动执行上述后端、前端两步，并验证 Docker 镜像可构建、可启动）；因推送令牌权限限制（细粒度令牌不支持 workflow 范围）暂未上传至 GitHub，需要时可改用带 `workflow` 权限的令牌补推启用。
+路径规划基准（会把统计写入 `docs/benchmark-paths.json`）：
+
+```bash
+cd backend
+python tools/benchmark_paths.py --size 50 --density 0.2 --samples 100 --perf \
+    --json ../docs/benchmark-paths.json
+```
+
+CI：`.github/workflows/ci.yml` 在 push / PR 到 `main` 时执行三阶段——
+后端 ruff + pytest、前端 eslint + vitest + build、Docker 构建并探活 `/api/v1/health`。
+以前这条流水线因为令牌权限（细粒度令牌不含 `workflow` 范围）没能推上去，现在文件已在仓库里，
+用带 `workflow` 权限的令牌推送即可自动启用。
 
 ## 许可证
 

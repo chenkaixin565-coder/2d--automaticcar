@@ -10,9 +10,13 @@ V2.0 变更：
   - state 帧推送循环改为全进程一份（与 WebSocket 连接数无关）；
   - /health 额外返回 tick 健康状况，可发现"进程活着但仿真死了"；
   - 静态托管做路径解析防穿越。
-作者：智能巡检机器人二维仿真系统 V2.0 开发组
-日期：2026-10-26
-版本：V2.0
+
+V2.3.0 变更：
+  - 装配 Agent 指令层（REST /agent/command + /agent/tools）；
+  - /health 增加异常检测策略与 Agent 模式，便于线上核对"到底跑没跑 AI"。
+作者：智能巡检机器人二维仿真系统 V2.3.0 开发组
+日期：2026-10-30
+版本：V2.3.0
 """
 
 import asyncio
@@ -124,9 +128,10 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(
     title="智能巡检机器人二维仿真系统",
-    description="基于 FastAPI 的二维栅格机器人仿真后端：A* 寻路、虚拟传感器、规则异常检测、"
-    "一键路线规划、自动清障与地图编辑（V2.2.1）",
-    version="V2.2.1",
+    description="基于 FastAPI 的二维栅格机器人仿真后端：A* 八邻域寻路、虚拟传感器、"
+    "规则 + IsolationForest 双策略异常检测、一键路线规划、自然语言 Agent 指令层"
+    "（V2.3.0）",
+    version="V2.3.0",
     lifespan=lifespan,
 )
 
@@ -238,13 +243,16 @@ async def health() -> dict:
     age = None if last is None else round(time.time() - last, 1)
     return {
         "status": "ok",
-        "version": "V2.2.1",
+        "version": "V2.3.0",
         "tick_errors": _TICK_STATE["tick_errors"],
         "last_tick_age_s": age,
         "tick_alive": age is not None and age < max(5.0, settings.tick_interval_ms / 1000 * 10),
         "auth_mode": settings.auth_mode,
         "rate_limit_per_minute": settings.rate_limit_per_minute,
         "ws_clients": len(manager.active_connections),
+        # V2.3.0：把"AI 到底以什么形态在跑"暴露出来，便于线上核对。
+        "anomaly_strategy": type(engine.anomaly_detector).__name__,
+        "agent_mode": "ollama" if settings.agent_llm_enabled else "rule",
     }
 
 

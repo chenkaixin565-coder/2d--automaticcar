@@ -67,14 +67,16 @@ def test_move_endpoint():
 
 
 def test_path_endpoint():
-    """GET /path 应返回 A* 结果三元组。"""
+    """GET /path 应返回 A* 结果（V2.3.0 起含可达性与失败原因码）。"""
     # 起点/终点均在边界环内侧（真正的边界不可穿越）
     response = client.get("/api/v1/path", params={"start": "1,1", "goal": "3,3"})
     assert response.status_code == 200
     data = response.json()
-    assert set(data.keys()) == {"path", "visited_count", "cost"}
+    assert set(data.keys()) == {"path", "visited_count", "cost", "reachable", "error"}
     assert data["path"][0] == [1, 1]
     assert data["path"][-1] == [3, 3]
+    assert data["reachable"] is True
+    assert data["error"] is None
 
 
 def test_patrol_lifecycle():

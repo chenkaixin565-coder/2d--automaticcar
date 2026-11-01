@@ -14,7 +14,7 @@ import math
 import random
 
 from app.core import config
-from app.core.constants import CELL_OBSTACLE, CELL_BARRIER
+from app.core.constants import CELL_BARRIER, CELL_OBSTACLE
 
 
 class SensorSimulator:

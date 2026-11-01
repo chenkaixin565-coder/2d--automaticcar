@@ -15,9 +15,14 @@ V2.0 变更（对应验收清单）：
   6. 新增 restart（保留尾迹）与 new_map（新建空白地图）；
   7. 低电量自动返航充电，充满后自动继续原巡检任务；
   8. 温度改为累积模型，过热告警可真实触发。
-作者：智能巡检机器人二维仿真系统 V2.0 开发组
-日期：2026-10-26
-版本：V2.0
+
+V2.3.0 变更：
+  9. 路径升级为八邻域 + 视线法平滑，斜向一步按 √2 格折旧电量；
+ 10. 新增 go_charge()：Agent 可以用自然语言把机器人派回充电点；
+ 11. 新增 emit_frame()：供 Agent 层把执行结果广播给所有客户端。
+作者：智能巡检机器人二维仿真系统 V2.3.0 开发组
+日期：2026-10-30
+版本：V2.3.0
 """
 
 import logging
@@ -25,6 +30,7 @@ import math
 from datetime import datetime, timezone
 
 from app.algorithms.astar import astar
+from app.algorithms.smoothing import smooth_and_expand
 from app.core import config
 from app.core.constants import (
     ANOMALY_LOW_BATTERY,
@@ -176,6 +182,18 @@ class SimulationEngine:
             except Exception:  # noqa: BLE001 - 单个客户端异常不能影响仿真循环。
                 logger.exception("事件监听器执行失败")
 
+    def emit_frame(self, frame: dict) -> None:
+        """
+        对外公开的事件广播入口（V2.3.0）。
+
+        Agent 指令层在 REST 请求里执行完一条自然语言指令后，需要把结果同步给
+        所有在线客户端（例如手机发指令、电脑同步看到），因此提供一个公开包装，
+        而不是让业务层直接调用私有的 _emit。
+
+        :param frame: 与 WebSocket 协议一致的帧字典。
+        """
+        self._emit(frame)
+
     def _emit_anomaly(self, event: dict) -> None:
         """广播异常事件帧并写入日志。"""
         logger.warning("异常事件: %s - %s @ %s", event["type"], event["message"], event["position"])
@@ -306,7 +324,9 @@ class SimulationEngine:
             self.x, self.y = target
             self.theta = math.atan2(dy, dx)
             self.visited_trail.append([self.x, self.y])
-            self.battery = max(0.0, self.battery - config.settings.battery_move_cost)
+            # 斜向一步的几何长度是 √2，电量按实际走过的距离折算（V2.3.0）。
+            step_cost = config.settings.battery_move_cost * math.hypot(dx, dy)
+            self.battery = max(0.0, round(self.battery - step_cost, 2))
             self.sensor_sim.note_move()  # 手动移动同样产生温升（供过热检测）
             self.speed = 1.0
             if self.mode != MODE_CHARGING:
@@ -649,6 +669,14 @@ class SimulationEngine:
             return (-1, 0)
         return (0, -1)
 
+    def heading_step(self) -> tuple[int, int]:
+        """
+        当前朝向对应的单位步长（供 Agent 解释"前进 / 后退"）。
+
+        :return: (dx, dy)，取值在四邻域内。
+        """
+        return self._theta_to_step(self.theta)
+
     # ---------- 巡检 ----------
 
     def start_patrol(self, goals: list[list[int]] | None = None) -> dict:
@@ -690,6 +718,42 @@ class SimulationEngine:
         logger.info("巡检已停止")
         self._emit_notice("自动巡检已停止")
         return self.patrol.status_dict()
+
+    def go_charge(self) -> dict:
+        """
+        主动返回充电点（V2.3.0，Agent 的"去充电"工具）。
+
+        与低电量自动返航复用同一套状态机：切到 charging 模式、用 A* 规划到
+        充电点的路径；若此前正在巡检，充满后自动继续原任务。
+
+        :return: 控制类统一响应体（state 数据 + 权威地图）。
+        """
+        if self.mode == MODE_EMPTY:
+            self._emit_notice("电量耗尽，无法自行返回；请先搬回初始点")
+            return self._command_payload()
+        target = tuple(self.map.charge_point)
+        if (self.x, self.y) == target:
+            self._emit_notice("机器人已在充电点上，无需返航")
+            return self._command_payload()
+
+        result = astar(self.map.grid, (self.x, self.y), target)
+        if not result["path"]:
+            self._emit_notice(
+                f"充电点 [{target[0]}, {target[1]}] 当前不可达，请先清除沿途障碍"
+            )
+            return self._command_payload()
+
+        was_patrolling = self.patrol.running
+        self._resume_patrol_after_charge = was_patrolling
+        self.mode = MODE_CHARGING
+        self.path = smooth_and_expand(self.map.grid, result["path"])
+        self.paused = False
+        self.blocked = None
+        logger.info("机器人主动返航充电，路径长度 %d", len(self.path))
+        self._emit_notice(
+            f"正在返回充电点 [{target[0]}, {target[1]}]，预计 {len(self.path) - 1} 步"
+        )
+        return self._command_payload()
 
     def patrol_decision(self, action: str) -> dict:
         """
@@ -750,8 +814,8 @@ class SimulationEngine:
                 return
             result = astar(self.map.grid, (self.x, self.y), goal)
             if result["path"]:
-                self.path = result["path"]
-                self.patrol.path_remain = max(0, len(result["path"]) - 1)
+                self.path = smooth_and_expand(self.map.grid, result["path"])
+                self.patrol.path_remain = max(0, len(self.path) - 1)
                 self.patrol.blocked_by = None
                 return
             self._emit_anomaly(
@@ -777,8 +841,8 @@ class SimulationEngine:
         if goal is not None:
             result = astar(self.map.grid, (self.x, self.y), goal)
             if result["path"] and len(result["path"]) > 1:
-                self.path = result["path"]
-                self.patrol.path_remain = max(0, len(result["path"]) - 1)
+                self.path = smooth_and_expand(self.map.grid, result["path"])
+                self.patrol.path_remain = max(0, len(self.path) - 1)
                 if self.blocked or self.paused:
                     self.blocked = None
                     self.paused = False
@@ -852,11 +916,14 @@ class SimulationEngine:
         """
         moving = False
         arrived_goal = False
+        # 本 tick 走过的几何长度：直行 1、斜行 √2（V2.3.0 电量按距离折算）。
+        step_len = 1.0
 
         # 步骤 1：巡检移动（遇阻暂停时不推进）。
         if self.mode == MODE_PATROL and not self.paused and len(self.path) > 1:
             next_cell = self.path[1]
             if self.map.is_free(*next_cell):
+                step_len = math.hypot(next_cell[0] - self.x, next_cell[1] - self.y)
                 self.x, self.y = next_cell
                 self.theta = math.atan2(next_cell[1] - self.path[0][1], next_cell[0] - self.path[0][0])
                 self.visited_trail.append([self.x, self.y])
@@ -875,6 +942,7 @@ class SimulationEngine:
         elif self.mode == MODE_CHARGING and len(self.path) > 1:
             next_cell = self.path[1]
             if self.map.is_free(*next_cell):
+                step_len = math.hypot(next_cell[0] - self.x, next_cell[1] - self.y)
                 self.x, self.y = next_cell
                 self.theta = math.atan2(next_cell[1] - self.path[0][1], next_cell[0] - self.path[0][0])
                 self.visited_trail.append([self.x, self.y])
@@ -917,7 +985,10 @@ class SimulationEngine:
                     self._emit_notice("充电完成（100%）")
                 self._resume_patrol_after_charge = False
         elif moving:
-            self.battery = max(0.0, round(self.battery - config.settings.battery_move_cost, 2))
+            self.battery = max(
+                0.0,
+                round(self.battery - config.settings.battery_move_cost * step_len, 2),
+            )
         else:
             cost = config.settings.battery_idle_cost
             if cost > 0:

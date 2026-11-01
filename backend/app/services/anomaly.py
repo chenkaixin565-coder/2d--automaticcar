@@ -11,9 +11,12 @@
 两条策略都输出结构一致的 anomaly 事件，通过 WebSocket 的 anomaly 帧即时推送。
 机器学习重依赖（numpy / scikit-learn）仅在 ml 策略下按需惰性导入，保证默认
 rule 策略在仅安装基础依赖的环境下也能正常运行。
-作者：智能巡检机器人二维仿真系统 V1.0 开发组
-日期：2026-10-24
-版本：V1.0
+
+V2.3.0：新增 auto 策略并设为默认——依赖存在就用 IsolationForest，不存在就
+静默回退到规则基线，避免"代码里有 ML、线上却从没跑过"的口径问题。
+作者：智能巡检机器人二维仿真系统 V2.3.0 开发组
+日期：2026-10-30
+版本：V2.3.0
 """
 
 import logging
@@ -32,6 +35,9 @@ from app.core.constants import (
 )
 
 logger = logging.getLogger("simulation.anomaly")
+
+# 机器学习依赖是否可用：None 表示尚未检测。
+_ML_AVAILABLE: Optional[bool] = None
 
 
 class BaseAnomalyDetector:
@@ -385,24 +391,44 @@ class MLAnomalyDetector(BaseAnomalyDetector):
         self._training = False
 
 
-def create_detector(strategy: Optional[str] = None) -> BaseAnomalyDetector:
-    """
-    按策略创建异常检测器，对调用方透明。
-
-    :param strategy: 'rule'（默认）或 'ml'。
-    :return: 对应策略的检测器实例。
-    """
-    strategy = strategy or config.settings.anomaly_strategy
-    if strategy == "ml":
-        # 基础镜像不装 numpy/scikit-learn（见 requirements-ml.txt）：
-        # 缺依赖时自动降级为规则基线，避免仿真 tick 抛 ImportError 后整个循环停摆。
+def _ml_available() -> bool:
+    """检测 numpy / scikit-learn 是否可用（惰性导入，缓存结果）。"""
+    global _ML_AVAILABLE
+    if _ML_AVAILABLE is None:
         try:
             import numpy  # noqa: F401
             import sklearn  # noqa: F401
         except ImportError:
+            _ML_AVAILABLE = False
+        else:
+            _ML_AVAILABLE = True
+    return _ML_AVAILABLE
+
+
+def create_detector(strategy: Optional[str] = None) -> BaseAnomalyDetector:
+    """
+    按策略创建异常检测器，对调用方透明。
+
+    V2.3.0：默认策略改为 auto——装了 numpy/scikit-learn 就启用机器学习，
+    没装则静默使用规则基线。这样"代码里有 AI"和"线上真在跑 AI"不再是两回事，
+    同时又不强制所有部署都装 200MB 的科学计算依赖。
+
+    :param strategy: 'auto'（默认）/ 'rule' / 'ml'。
+    :return: 对应策略的检测器实例。
+    """
+    strategy = (strategy or config.settings.anomaly_strategy).strip().lower()
+    if strategy in ("ml", "auto"):
+        if _ml_available():
+            logger.info("异常检测策略：IsolationForest（%s）", strategy)
+            return MLAnomalyDetector()
+        if strategy == "ml":
+            # 基础镜像不装 numpy/scikit-learn（见 requirements-ml.txt）：
+            # 缺依赖时自动降级为规则基线，避免仿真 tick 抛 ImportError 后整个循环停摆。
             logger.warning("未安装 numpy/scikit-learn，ml 策略自动降级为规则基线")
-            return RuleAnomalyDetector()
-        return MLAnomalyDetector()
+        else:
+            logger.info("未安装 numpy/scikit-learn，auto 策略使用规则基线")
+        return RuleAnomalyDetector()
     if strategy != "rule":
         logger.warning("未知异常检测策略 %r，回退到规则基线", strategy)
+    logger.info("异常检测策略：规则基线")
     return RuleAnomalyDetector()

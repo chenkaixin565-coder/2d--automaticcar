@@ -4,6 +4,71 @@
 
 ---
 
+## [V2.3.0] - 2026-10-30 — 自然语言 Agent、八邻域 A* 与路径平滑
+
+> 这一版的靶子是策划书"进阶版"里最缺的一块：**Agent**。
+> 不是"接个大模型聊天"，而是把一句话变成一次受控的工具调用：
+> 解析 → 白名单 → 参数校验 → （破坏性操作）二次确认 → 执行 → 汇报。
+> 同时补上"复杂路径规划"的两项：八邻域搜索与视线法平滑。
+
+### 新增
+
+- **Agent 指令层**：`POST /api/v1/agent/command` + `GET /api/v1/agent/tools`；
+  10 个白名单工具（状态 / 规划 / 巡检 / 停止 / 回充 / 移动 / 清障 / 改格子 / 复位 / 新建地图）
+- **中文规则解析器**（默认，离线可用）：覆盖"去 5,5 巡检""把 3,4 的障碍清掉""回充电点""现在状态怎么样"等说法，支持中英文标点与括号坐标；听不懂就返回提示，不猜动作
+- **可选本地大模型**：`AGENT_LLM_ENABLED=true` 接 Ollama（`/api/chat`、`format=json`、`temperature=0`）；6 秒超时、连接失败、JSON 非法都自动回退规则解析，`source` 字段标记 `rule` / `llm` / `rule-fallback`
+- **破坏性操作二次确认**：清障、改格子、复位、新建地图第一次只返回 `need_confirm`，`confirm=true` 才执行
+- **Agent 结果广播**：执行完成推送 `agent` 帧，多端（手机发指令、电脑看结果）同步
+- **前端「智能指令」面板**（`AgentPanel.vue`）：输入框、示例、对话记录、确认按钮、工具名与耗时；桌面右侧面板与手机「更多详情」抽屉都可使用
+- **离线同构解析器**（`frontend/src/services/agent.js`）：GitHub Pages 纯静态版没有后端，本地规则解析承担同样职责，工具集与返回字段与后端逐项对齐
+- **A\* 八邻域**：octile 启发、斜向代价 √2、禁止斜穿墙角；`astar(grid, start, goal, diagonal=True)`
+- **路径平滑**（`algorithms/smoothing.py`）：超覆盖 Bresenham 视线检测 + 拐点抽稀 + 逐格回填，平滑后路径不长于原路径且仍可逐格执行
+- **BFS 对照实现回归**（`algorithms/bfs.py`）：补齐归档中缺失的模块，恢复"A\* vs BFS"对照实验与 5 个基准用例
+- **基准脚本**（`backend/tools/benchmark_paths.py`）：八邻域 / 四邻域 / BFS 三方对比，输出 Markdown 表格与 `docs/benchmark-paths.json`
+- **`POST /api/v1/robot/charge`**：主动返回充电点（Agent 的 `go_charge` 工具复用同一状态机）
+- **`GET /path` 返回 `reachable` / `error`**：失败原因码 `out_of_bounds` / `start_blocked` / `goal_blocked` / `unreachable` / `empty_map`
+- **异常检测默认 `auto`**：装了 numpy/scikit-learn 就启用 IsolationForest，没装静默回退规则；`/health` 新增 `anomaly_strategy` 与 `agent_mode`
+- **CI 落库**：`.github/workflows/ci.yml`（后端 ruff + pytest、前端 eslint + vitest + build、Docker 构建并探活）
+
+### 变更
+
+- **电量按几何长度折算**：斜向一步按 √2 格计费，规划预算与实际跑完的电量终于对得上（前后端同口径）
+- **巡检路径先平滑再执行**：`_plan_current_segment` / 动态重规划 / 充电返航统一走 `smooth_and_expand`
+- **`ANOMALY_STRATEGY` 默认值**：`rule` → `auto`；显式设 `rule` 可固定为规则基线
+- **Dockerfile 增加 `INSTALL_ML` 构建参数**：默认轻量镜像，`--build-arg INSTALL_ML=true` 才装 ML 依赖
+- **docker-compose 增加 `extra_hosts`**：容器内可访问宿主机的 Ollama（本地演示大模型）
+- **测试环境固定 `ANOMALY_STRATEGY=rule`**（`tests/conftest.py`）：ML 有 500 tick 冷启动，避免"tick 后应告警"类用例变得不确定
+- 修复 `sensors.py` 的 import 顺序（`ruff check .` 之前会失败，CI 一跑就红）
+
+### 文档
+
+- 新增 `docs/agent.md`：架构、工具白名单、安全边界、两种解析器、演示脚本、RTX 5060 启用步骤、已知边界
+- 重写 `docs/algorithm.md`：八邻域可采纳性/一致性论证、禁止斜穿墙角、平滑算法、三方实测对比（含"八邻域多展开 59% 节点但路径短 13%"的取舍）
+- 补充 `docs/api.md`：Agent 两接口、`/robot/charge`、`/path` 新字段、`agent` 帧
+- 更新 `docs/ai.md`：`auto` 策略与镜像构建参数
+- 新增 `docs/交付说明-V2.3.0.md`
+
+### 测试
+
+- 后端 **123/123 通过**（新增 `test_agent.py` 30 例、`test_smoothing.py` 6 例、`test_bfs.py` 5 例，`test_astar.py` 扩到 10 例），`ruff check .` 全绿
+- 前端 **89/89 通过**（新增 `agent.test.js` 22 例，`astar.test.js` 扩到 10 例），`eslint` 0 error / 0 warning，`vite build` 通过
+- 实测：健康检查返回 `version=V2.3.0`、`anomaly_strategy=MLAnomalyDetector`、`agent_mode=rule`；
+  "去 5,5 巡检" → `path_remain=4`（4 步斜向）、"把 12,8 的障碍清掉" → 先 `need_confirm`、确认后扣 5%；
+  WebSocket 首帧 `auth_state`、次帧 `state` 正常
+
+### 基准（50×50 / 20% 障碍 / 100 组，种子 20261030）
+
+| 算法 | 平均扩展节点 | 平均耗时 | 平均代价 |
+|---|---|---|---|
+| A*（八邻域） | 139.5 | 0.50 ms | **29.6** |
+| A*（四邻域） | 87.9 | 0.20 ms | 34.0 |
+| BFS（四邻域） | 917.4 | 0.60 ms | 34.0 |
+
+八邻域 A* 扩展节点为 BFS 的 **15.2%**，路径几何长度比四邻域短 **12.9%**；
+四邻域 A* 与 BFS 在 100/100 组样本上最优代价完全一致。
+
+---
+
 ## [V2.2.1] - 2026-10-26 — 只读浏览与指令级鉴权
 
 > 修 V2.2.0 的一个权限粒度问题：读状态本来应该是公开的，只有"动机器人"才需要密钥。
