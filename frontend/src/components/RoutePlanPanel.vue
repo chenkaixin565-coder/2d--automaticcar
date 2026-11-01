@@ -100,7 +100,7 @@
         :disabled="patrolStatus.running"
         @click="$emit('start-patrol')"
       >
-        开始巡检
+        前往该点（只巡这一个）
       </button>
 
       <!-- 巡检受阻：停在障碍前一格，等待用户决策（V2.0） -->

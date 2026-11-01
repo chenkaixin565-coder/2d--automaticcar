@@ -110,6 +110,21 @@ describe('V2.3.1 交互修复', () => {
     expect(service.getState().battery).toBeCloseTo(before - 5, 5)
   })
 
+  it('单点巡检到达后应结束，不会继续跑其他巡检点', () => {
+    const map = service.getMap()
+    const goal = map.goals[0]
+    service.startPatrol([goal])
+    expect(service._patrol.totalGoals).toBe(1)
+    for (let i = 0; i < 60 && service._patrol.running; i += 1) {
+      service._tick()
+    }
+    expect(service._patrol.running).toBe(false)
+    expect(service._state.mode).toBe('manual')
+    expect(service._patrol.currentGoalIndex).toBe(service._patrol.totalGoals)
+    expect(service._state.x).toBe(goal[0])
+    expect(service._state.y).toBe(goal[1])
+  })
+
   it('上传形象会广播 avatar 事件并可读回', async () => {
     const dataUrl = 'data:image/png;base64,iVBORw0KGgo='
     await service.uploadAvatar(dataUrl)
