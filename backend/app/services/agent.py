@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 
 from app.core import config
-from app.core.constants import CELL_BARRIER, CELL_OBSTACLE, MODE_EMPTY
+from app.core.constants import CELL_BARRIER, CLEARABLE_CELLS, MATERIAL_LABELS, MODE_EMPTY
 
 logger = logging.getLogger("simulation.agent")
 
@@ -83,8 +83,8 @@ TOOL_SPECS: dict[str, dict] = {
         "examples": ["把 3,4 的障碍清掉", "清除 6,2 的墙"],
     },
     "set_cell": {
-        "description": "编辑地图：把某格设为空闲 / 障碍 / 固定屏障（不耗电）",
-        "args": {"x": "列坐标", "y": "行坐标", "value": "0=空闲 1=障碍 2=屏障"},
+        "description": "编辑地图：把某格设为空闲 / 石头 / 固定屏障 / 沙子 / 金刚石（不耗电）",
+        "args": {"x": "列坐标", "y": "行坐标", "value": "0=空闲 1=石头 2=屏障 3=沙子 4=金刚石"},
         "destructive": True,
         "examples": ["把 7,7 设成障碍", "清除 4,4 这个格子"],
     },
@@ -238,6 +238,10 @@ def parse_rules(text: str, heading: tuple[int, int] = (1, 0)) -> dict:
         value = 0
         if _has(normalized, _BARRIER_WORDS):
             value = 2
+        elif _has(normalized, ("金刚石", "钻石", "diamond")):
+            value = 4
+        elif _has(normalized, ("沙子", "沙地", "sand")):
+            value = 3
         elif _has(normalized, _OBSTACLE_WORDS):
             value = 1
         elif _has(normalized, _EMPTY_WORDS):
@@ -385,11 +389,12 @@ def validate_call(tool: str, args: dict, engine) -> dict:
         value = map_data.grid[cell[1]][cell[0]]
         if value == CELL_BARRIER:
             raise AgentError(f"[{cell[0]}, {cell[1]}] 是固定屏障，机器人无法清除")
-        if value != CELL_OBSTACLE:
+        if value not in CLEARABLE_CELLS:
             raise AgentError(f"[{cell[0]}, {cell[1]}] 不是障碍物，无需清除")
-        if engine.battery + 1e-9 < config.settings.clear_obstacle_cost:
+        cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
+        if engine.battery + 1e-9 < cost:
             raise AgentError(
-                f"电量不足（当前 {engine.battery:.1f}%），清除一处需要 {config.settings.clear_obstacle_cost:.0f}%"
+                f"电量不足（当前 {engine.battery:.1f}%），清除{MATERIAL_LABELS.get(value, '障碍')}需要 {cost:.0f}%"
             )
         return {"cell": list(cell)}
 
@@ -397,8 +402,8 @@ def validate_call(tool: str, args: dict, engine) -> dict:
         x = _as_int(args.get("x"), "x")
         y = _as_int(args.get("y"), "y")
         value = _as_int(args.get("value", 0), "value")
-        if value not in (0, 1, 2):
-            raise AgentError("格子取值只能是 0（空闲）、1（障碍）或 2（固定屏障）")
+        if value not in (0, 1, 2, 3, 4):
+            raise AgentError("格子取值只能是 0（空闲）、1（石头）、2（固定屏障）、3（沙子）、4（金刚石）")
         if not map_data.in_bounds(x, y):
             raise AgentError(f"坐标 [{x}, {y}] 在地图之外")
         if map_data.is_boundary(x, y):
@@ -611,20 +616,22 @@ class AgentService:
             )
 
         if tool == "clear_obstacle":
-            payload = engine.clear_obstacle_at(args["cell"])
             cell = args["cell"]
-            if engine.map.grid[cell[1]][cell[0]] == CELL_OBSTACLE:
+            value = engine.map.grid[cell[1]][cell[0]]
+            cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
+            payload = engine.clear_obstacle_at(cell)
+            if engine.map.grid[cell[1]][cell[0]] != 0:
                 return False, f"清除 [{cell[0]}, {cell[1]}] 失败（可能电量不足）。", payload
             return (
                 True,
-                f"已清除 [{cell[0]}, {cell[1]}] 的障碍，扣除 {config.settings.clear_obstacle_cost:.0f}% 电量，"
+                f"已清除{MATERIAL_LABELS.get(value, '障碍')} [{cell[0]}, {cell[1]}]，扣除 {cost:.0f}% 电量，"
                 f"剩余 {engine.battery:.1f}%。",
                 payload,
             )
 
         if tool == "set_cell":
             payload = engine.set_cell(args["x"], args["y"], args["value"])
-            label = {0: "空闲", 1: "障碍", 2: "固定屏障"}[args["value"]]
+            label = {0: "空闲", 1: "石头", 2: "固定屏障", 3: "沙子", 4: "金刚石"}[args["value"]]
             return True, f"已把 [{args['x']}, {args['y']}] 设为{label}。", payload
 
         if tool == "reset":
@@ -753,9 +760,9 @@ def _describe_args(tool: str, args: dict) -> str:
     """把参数渲染成一句中文，用于确认提示。"""
     if tool == "clear_obstacle":
         cell = args["cell"]
-        return f"清除 [{cell[0]}, {cell[1]}] 的障碍，扣 5% 电量"
+        return f"清除 [{cell[0]}, {cell[1]}] 的障碍（按材质扣电）"
     if tool == "set_cell":
-        label = {0: "空闲", 1: "障碍", 2: "固定屏障"}[args["value"]]
+        label = {0: "空闲", 1: "石头", 2: "固定屏障", 3: "沙子", 4: "金刚石"}[args["value"]]
         return f"把 [{args['x']}, {args['y']}] 设为{label}"
     if tool == "new_map":
         return f"新建 {args['width']}×{args['height']} 空白地图"

@@ -10,11 +10,25 @@
 
 # 地图格子取值：
 #   0 = 可通行
-#   1 = 普通障碍（可被机器人清除，每处消耗电量）
+#   1 = 普通障碍「石头」（可被机器人清除，每处消耗 5% 电量）
 #   2 = 固定屏障（V2.1：不可穿越、机器人不可清除，只能在地图编辑时人工擦除）
+#   3 = 沙子（V2.4.0：可清除，耗电更少）
+#   4 = 金刚石（V2.4.0：可清除，耗电更高）
 CELL_FREE = 0
 CELL_OBSTACLE = 1
 CELL_BARRIER = 2
+CELL_SAND = 3
+CELL_DIAMOND = 4
+
+# 可被机器人清除的格子取值（屏障不可清除）。
+CLEARABLE_CELLS = (CELL_OBSTACLE, CELL_SAND, CELL_DIAMOND)
+
+# 材质中文名，供日志、Agent 文案使用。
+MATERIAL_LABELS = {
+    CELL_OBSTACLE: "石头",
+    CELL_SAND: "沙子",
+    CELL_DIAMOND: "金刚石",
+}
 
 # 机器人运行模式。
 MODE_MANUAL = "manual"      # 手动控制

@@ -2,21 +2,24 @@
 路线规划模块。
 
 模块功能：为"一键规划路线"提供穿障 A* 与电力预算计算。与普通 A*
-（app.algorithms.astar）的区别：规划出的路线是理论最短路径——普通障碍
-格视为"可通行但需要清除"，只有最外环边界墙不可穿越；随后按移动耗电与
-清障耗电（每处障碍）计算总预算，在电量不足时截断为"可清除前 k 个"。
+（app.algorithms.astar）的区别：规划出的路线是理论最短路径——可清除的
+障碍格（石头/沙子/金刚石）视为"可通行但需要清除"，只有最外环边界墙与
+固定屏障不可穿越；随后按移动耗电与各材质清障耗电计算总预算，电量不足
+时按路径顺序截断。
 
 V2.3.0 变更：与主 A* 同步升级为八邻域（octile 启发、斜向代价 √2、禁止
 斜穿墙角），使"规划预览"与"实际执行"使用同一套几何口径。
-作者：智能巡检机器人二维仿真系统 V2.3.0 开发组
-日期：2026-10-30
-版本：V2.3.0
+V2.4.0 变更：障碍引入材质（1=石头 5%、3=沙子 2%、4=金刚石 20%），
+预算按每格材质累加，不再"所有障碍一个价"。
+作者：智能巡检机器人二维仿真系统 V2.4.0 开发组
+日期：2026-11-04
+版本：V2.4.0
 """
 
 import heapq
 
 from app.algorithms.astar import SQRT2, octile
-from app.core.constants import CELL_BARRIER, CELL_OBSTACLE
+from app.core.constants import CELL_BARRIER, CLEARABLE_CELLS
 
 # 八邻域移动方向（dx, dy），与 astar 保持一致。
 _NEIGHBORS = [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1)]
@@ -28,9 +31,9 @@ def plan_route(
     goal: tuple[int, int],
 ) -> dict:
     """
-    计算起点到目标点的"理论最短路径"（可穿越普通障碍，边界墙不可穿越）。
+    计算起点到目标点的"理论最短路径"（可穿越可清除障碍，边界墙/屏障不可穿越）。
 
-    :param grid: 二维栅格数组，0=可通行，1=障碍物，2=固定屏障。
+    :param grid: 二维栅格数组，0=可通行，1/3/4=可清除障碍，2=固定屏障。
     :param start: 起点坐标 (x, y)。
     :param goal: 目标坐标 (x, y)。
     :return: {'path': [[x, y], ...], 'obstacles_on_path': [[x, y], ...], 'cost': float}，
@@ -39,7 +42,7 @@ def plan_route(
     height = len(grid)
     width = len(grid[0]) if height else 0
 
-    # 边界墙与固定屏障不可穿越；普通障碍视为"可通行但需清除"。
+    # 边界墙与固定屏障不可穿越；石头/沙子/金刚石视为"可通行但需清除"。
     def passable(x: int, y: int) -> bool:
         if not (0 < x < width - 1 and 0 < y < height - 1):
             return False
@@ -68,7 +71,7 @@ def plan_route(
                 current = came_from[current]
                 path.append(list(current))
             path.reverse()
-            obstacles = [cell for cell in path if grid[cell[1]][cell[0]] == CELL_OBSTACLE]
+            obstacles = [cell for cell in path if grid[cell[1]][cell[0]] in CLEARABLE_CELLS]
             return {"path": path, "obstacles_on_path": obstacles, "cost": round(g_score[goal], 4)}
         for dx, dy in _NEIGHBORS:
             neighbor = (current[0] + dx, current[1] + dy)
@@ -101,23 +104,25 @@ def build_plan(
     battery: float,
     move_cost: float,
     clear_cost: float,
+    material_costs: dict | None = None,
 ) -> dict:
     """
-    规划路线并按电力预算决定可清除的障碍个数。
+    规划路线并按电力预算决定可清除的障碍。
 
-    预算模型：总耗电 = 路径几何长度 × move_cost + 待清障数 × clear_cost。
-    其中几何长度直行计 1、斜行计 √2，与仿真引擎的逐步扣电口径一致。
-    电量充足时全部纳入；仅够移动时按剩余电量截断为前 k 个；连移动都不够时
-    标记为不可到达。
+    预算模型：总耗电 = 路径几何长度 × move_cost + Σ 每格材质的清障耗电。
+    材质成本来自 `shared/simulation-rules.json`，缺省时退回统一的 clear_cost。
+    电量充足时全部纳入；仅够移动时按路径顺序尽量多清；连移动都不够时不可到达。
 
     :param grid: 二维栅格数组。
     :param start: 起点坐标 (x, y)。
     :param goal: 目标坐标 (x, y)。
     :param battery: 当前电量百分比。
     :param move_cost: 每移动一格耗电百分比（斜向按 √2 格折算）。
-    :param clear_cost: 每清除一处障碍耗电百分比。
+    :param clear_cost: 未登记材质的兜底清障耗电。
+    :param material_costs: {格子值: 单处耗电}，例如 {1: 5.0, 3: 2.0, 4: 20.0}。
     :return: 路线规划字典（字段与前端 routePlanner.js 逐字段一致）。
     """
+    costs = material_costs or {}
     result = plan_route(grid, start, goal)
     base = {
         "goal": list(goal),
@@ -140,20 +145,33 @@ def build_plan(
 
     path = result["path"]
     obstacles = result["obstacles_on_path"]
+    # 每格按材质计价
+    per_cell = [float(costs.get(grid[y][x], clear_cost)) for x, y in obstacles]
     move_cost_total = round(result["cost"] * move_cost, 2)
-    total_cost = round(move_cost_total + len(obstacles) * clear_cost, 2)
+    full_clear_cost = round(sum(per_cell), 2)
+    total_cost = round(move_cost_total + full_clear_cost, 2)
 
     if battery + 1e-9 >= total_cost:
         clearable = list(obstacles)
+        clearable_cost = full_clear_cost
         enough = True
         reachable = True
     elif battery + 1e-9 >= move_cost_total:
-        affordable = int((battery - move_cost_total + 1e-9) // clear_cost) if clear_cost > 0 else len(obstacles)
-        clearable = obstacles[:affordable]
+        # 按路径顺序累加，直到预算不够为止
+        budget = battery - move_cost_total
+        clearable = []
+        clearable_cost = 0.0
+        for cell, cost in zip(obstacles, per_cell):
+            if clearable_cost + cost > budget + 1e-9:
+                break
+            clearable.append(cell)
+            clearable_cost += cost
+        clearable_cost = round(clearable_cost, 2)
         enough = False
         reachable = True
     else:
         clearable = []
+        clearable_cost = 0.0
         enough = False
         reachable = False
 
@@ -163,7 +181,7 @@ def build_plan(
         "obstacles": obstacles,
         "clearable": clearable,
         "move_cost": move_cost_total,
-        "clear_cost": round(len(clearable) * clear_cost, 2),
+        "clear_cost": clearable_cost,
         "total_cost": total_cost,
         "battery": battery,
         "clear_unit_cost": clear_cost,

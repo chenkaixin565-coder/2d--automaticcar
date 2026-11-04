@@ -15,7 +15,7 @@ V2.0 变更：
 """
 
 from app.algorithms.astar import astar
-from app.core.constants import CELL_OBSTACLE
+from app.core.constants import CLEARABLE_CELLS
 
 
 def order_goals_by_nearest(
@@ -66,7 +66,8 @@ def find_min_obstacle_to_remove(
 
     for y in range(height):
         for x in range(width):
-            if grid[y][x] != CELL_OBSTACLE:
+            value = grid[y][x]
+            if value not in CLEARABLE_CELLS:
                 continue
             # 真正的边界：最外环边界墙不可拆除，直接跳过
             if x == 0 or y == 0 or x == width - 1 or y == height - 1:
@@ -76,7 +77,7 @@ def find_min_obstacle_to_remove(
             try:
                 result = astar(grid, start, goal)
             finally:
-                grid[y][x] = CELL_OBSTACLE
+                grid[y][x] = value
             if result["path"] and result["cost"] < best_cost:
                 best_cost = result["cost"]
                 best_cell = (x, y)

@@ -59,3 +59,29 @@ export const PENDING_LIMIT = RULES.maps.pending_limit
 /** 新建地图允许的尺寸范围。 */
 export const MIN_MAP_SIZE = RULES.maps.min_size
 export const MAX_MAP_SIZE = RULES.maps.max_size
+
+/**
+ * 障碍材质（V2.4.0）。
+ *
+ * 格子值：1=石头、3=沙子、4=金刚石；清障成本来自共享规则，前后端同源。
+ * 每项形如 { value, key, label, clearCost }。
+ */
+export const MATERIALS = (RULES.materials || []).map((item) => ({
+  value: item.value,
+  key: item.key,
+  label: item.label,
+  clearCost: item.clear_cost,
+}))
+
+/** 材质值 → 单处清障耗电，例如 { 1: 5, 3: 2, 4: 20 }。 */
+export const MATERIAL_COSTS = Object.fromEntries(
+  MATERIALS.map((item) => [item.value, item.clearCost])
+)
+
+/** 材质值 → 中文名。 */
+export const MATERIAL_LABELS = Object.fromEntries(
+  MATERIALS.map((item) => [item.value, item.label])
+)
+
+/** 可被机器人清除的材质值。 */
+export const CLEARABLE_MATERIALS = MATERIALS.map((item) => item.value)

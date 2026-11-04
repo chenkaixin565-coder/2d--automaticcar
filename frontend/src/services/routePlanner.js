@@ -79,7 +79,8 @@ export function planRoute(grid, start, goal) {
         path.unshift(previous)
         cursor = key(previous[0], previous[1])
       }
-      const obstacles = path.filter(([x, y]) => grid[y][x] === 1)
+      // V2.4.0：石头(1) / 沙子(3) / 金刚石(4) 都算"待清障"
+      const obstacles = path.filter(([x, y]) => [1, 3, 4].includes(grid[y][x]))
       return { path, obstacles_on_path: obstacles, cost: gScore.get(current.key) }
     }
     closedSet.add(current.key)
@@ -128,7 +129,7 @@ function round2(value) {
  * @param {number} clearCost - 每清除一处障碍耗电百分比。
  * @returns {Object} 路线规划对象，字段与后端 build_plan 一致。
  */
-export function buildPlan(grid, start, goal, battery, moveCost, clearCost) {
+export function buildPlan(grid, start, goal, battery, moveCost, clearCost, materialCosts = {}) {
   const result = planRoute(grid, start, goal)
   const base = {
     goal: [...goal],
@@ -150,23 +151,41 @@ export function buildPlan(grid, start, goal, battery, moveCost, clearCost) {
   }
 
   const { path, obstacles_on_path: obstacles, cost } = result
+  // V2.4.0：每格按材质计价（石头 5%、沙子 2%、金刚石 20%）
+  const perCell = obstacles.map(([x, y]) => {
+    const value = grid[y][x]
+    const unit = materialCosts[value]
+    return typeof unit === 'number' ? unit : clearCost
+  })
   const moveCostTotal = round2(cost * moveCost)
-  const totalCost = round2(moveCostTotal + obstacles.length * clearCost)
+  const fullClearCost = round2(perCell.reduce((sum, value) => sum + value, 0))
+  const totalCost = round2(moveCostTotal + fullClearCost)
 
   let clearable
+  let clearableCost
   let enough
   let reachable
   if (battery + 1e-9 >= totalCost) {
     clearable = obstacles
+    clearableCost = fullClearCost
     enough = true
     reachable = true
   } else if (battery + 1e-9 >= moveCostTotal) {
-    const affordable = clearCost > 0 ? Math.floor((battery - moveCostTotal + 1e-9) / clearCost) : obstacles.length
-    clearable = obstacles.slice(0, affordable)
+    // 按路径顺序累加，直到预算不够为止
+    const budget = battery - moveCostTotal
+    clearable = []
+    clearableCost = 0
+    for (let index = 0; index < obstacles.length; index += 1) {
+      if (clearableCost + perCell[index] > budget + 1e-9) break
+      clearable.push(obstacles[index])
+      clearableCost += perCell[index]
+    }
+    clearableCost = round2(clearableCost)
     enough = false
     reachable = true
   } else {
     clearable = []
+    clearableCost = 0
     enough = false
     reachable = false
   }
@@ -177,7 +196,7 @@ export function buildPlan(grid, start, goal, battery, moveCost, clearCost) {
     obstacles,
     clearable,
     move_cost: moveCostTotal,
-    clear_cost: round2(clearable.length * clearCost),
+    clear_cost: clearableCost,
     total_cost: totalCost,
     battery,
     clear_unit_cost: clearCost,

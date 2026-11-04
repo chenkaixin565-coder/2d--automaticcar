@@ -73,6 +73,24 @@
       </button>
     </div>
 
+    <!-- 材质选择（V2.4.0）：障碍模式下选石头/沙子/金刚石，清障成本不同 -->
+    <div v-if="editMode === 'obstacle'" class="flex flex-wrap items-center gap-2 pl-1">
+      <span class="text-[11px] text-gray-500 dark:text-gray-400">材质</span>
+      <button
+        v-for="material in materials"
+        :key="material.value"
+        type="button"
+        class="px-2.5 py-1 text-[11px] rounded-full border transition-colors"
+        :class="paintValue === material.value
+          ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+          : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300'"
+        :title="`清障耗电 ${material.clearCost}%`"
+        @click="$emit('set-material', material.value)"
+      >
+        {{ material.label }} · {{ material.clearCost }}%
+      </button>
+    </div>
+
     <!-- 目标点标号开关：标号点地图 / 不标号点地图 -->
     <label class="flex items-center justify-between gap-2 px-1 cursor-pointer select-none">
       <span class="text-xs text-gray-600 dark:text-gray-300">目标点标号</span>
@@ -347,6 +365,7 @@
 
 import { computed, ref } from 'vue'
 import { MAP_PRESETS } from '../services/mapPresets.js'
+import { MATERIALS } from '../services/rules.js'
 import { importMap } from '../utils/mapIO.js'
 import { readAvatarFile } from '../utils/robotAvatar.js'
 
@@ -387,6 +406,11 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
+  // 当前选中的障碍材质（V2.4.0）：1=石头 3=沙子 4=金刚石
+  paintValue: {
+    type: Number,
+    default: 1,
+  },
 })
 
 const emit = defineEmits([
@@ -402,6 +426,7 @@ const emit = defineEmits([
   'start-patrol',
   'stop-patrol',
   'set-edit-mode',
+  'set-material',
   'clear-goals',
   'remove-goal',
   'toggle-trail',
@@ -461,6 +486,9 @@ async function onAvatarFileChange(event) {
     emit('avatar-error', error.message || '未知错误')
   }
 }
+
+/** 可绘制的障碍材质（V2.4.0），来自共享规则。 */
+const materials = MATERIALS
 
 const editModes = [
   { key: 'obstacle', label: '障碍' },

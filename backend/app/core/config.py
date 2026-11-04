@@ -11,12 +11,33 @@
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.shared import load_rules
 
 # 共享规则：后端与前端唯一的数值来源。
 RULES = load_rules()
+
+
+def _load_material_costs() -> dict[int, float]:
+    """
+    从共享规则读取"格子材质 → 单处清障耗电"（V2.4.0）。
+
+    :return: {格子值: 耗电百分比}；规则缺失时回退为只有石头。
+    """
+    costs: dict[int, float] = {}
+    for item in RULES.get("materials", []):
+        try:
+            costs[int(item["value"])] = float(item["clear_cost"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not costs:
+        costs = {1: float(RULES["battery"]["clear_cost"])}
+    return costs
+
+
+# 材质清障成本：1=石头、3=沙子、4=金刚石（与前端 shared 规则同源）。
+MATERIAL_COSTS = _load_material_costs()
 
 
 def _env_float(name: str, default: float) -> float:
@@ -53,6 +74,8 @@ class Settings:
     battery_idle_cost: float = _env_float("BATTERY_IDLE_COST", RULES["battery"]["idle_cost"])
     low_battery_threshold: float = _env_float("LOW_BATTERY_THRESHOLD", RULES["battery"]["low_threshold"])
     clear_obstacle_cost: float = _env_float("CLEAR_OBSTACLE_COST", RULES["battery"]["clear_cost"])
+    # 各材质单处清障耗电（V2.4.0）：{1: 5.0, 3: 2.0, 4: 20.0}
+    material_costs: dict = field(default_factory=lambda: dict(MATERIAL_COSTS))
     charge_rate: float = _env_float("CHARGE_RATE", RULES["battery"]["charge_rate"])
 
     # ---------- 传感器 ----------

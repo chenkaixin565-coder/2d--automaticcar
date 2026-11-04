@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.3.7</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.4.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -49,6 +49,7 @@
           :scale="scale"
           :offset="offset"
           :edit-mode="editMode"
+          :paint-value="paintValue"
           :is-dark="isDark"
           :robot-avatar="robotAvatar"
           :route-plan="routePlan"
@@ -119,6 +120,8 @@
           :show-goal-numbers="showGoalNumbers"
           :show-trail="showTrail"
           :pending-count="pendingCells.length"
+          :paint-value="paintValue"
+          @set-material="paintValue = $event"
           @toggle-trail="onToggleTrail"
           @new-map="onOpenNewMap"
           @restart="onRestart"
@@ -179,6 +182,7 @@
         :robot="robot"
         :patrol-status="patrolStatus"
         :edit-mode="editMode"
+        :paint-value="paintValue"
         :detail-open="drawerOpen"
         @move="onMove"
         @reset="onReset"
@@ -186,6 +190,7 @@
         @start-patrol="onStartPatrol"
         @stop-patrol="onStopPatrol"
         @set-edit-mode="editMode = $event"
+        @set-material="paintValue = $event"
         @fit-map="fitMap"
         @toggle-detail="drawerOpen = !drawerOpen"
         @open-plan="drawerOpen = true"
@@ -419,6 +424,8 @@ const cloudBase = computed(() => (usingBackend.value && service.baseUrl !== unde
 const scale = ref(1)
 const offset = ref({ x: 0, y: 0 })
 const editMode = ref('nav')
+// 障碍模式下当前选中的材质（V2.4.0）：1=石头 3=沙子 4=金刚石
+const paintValue = ref(1)
 const mapContainerRef = ref(null)
 
 // 主题
@@ -436,7 +443,8 @@ const hoverCellType = computed(() => {
   if (map.charge_point[0] === x && map.charge_point[1] === y) return '充电点'
   const goalIndex = map.goals.findIndex((g) => g[0] === x && g[1] === y)
   if (goalIndex >= 0) return `巡检点 ${goalIndex + 1}`
-  if (map.grid[y][x] === 1) return '障碍'
+  const materialLabels = { 1: '石头', 2: '固定屏障', 3: '沙子', 4: '金刚石' }
+  if (materialLabels[map.grid[y][x]]) return materialLabels[map.grid[y][x]]
   return '可通行'
 })
 
@@ -1165,7 +1173,7 @@ function onEditCell({ x, y, value }) {
 }
 
 function onSetGoal({ x, y }) {
-  if (map.grid[y][x] === 1) return
+  if (map.grid[y][x] !== 0) return
   const goals = map.goals
   const index = goals.findIndex((g) => g[0] === x && g[1] === y)
   if (index >= 0) {
@@ -1178,14 +1186,14 @@ function onSetGoal({ x, y }) {
 }
 
 function onSetStart({ x, y }) {
-  if (map.grid[y][x] === 1) return
+  if (map.grid[y][x] !== 0) return
   map.start = [x, y]
   markMapCustom()
   service.updateMap(map)
 }
 
 function onSetCharge({ x, y }) {
-  if (map.grid[y][x] === 1) return
+  if (map.grid[y][x] !== 0) return
   map.charge_point = [x, y]
   markMapCustom()
   service.updateMap(map)

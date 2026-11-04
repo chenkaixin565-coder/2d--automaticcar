@@ -254,12 +254,16 @@ describe('地图导入校验 validateMap', () => {
     expect(validateMap(map).ok).toBe(false)
   })
 
-  it('栅格含非法值（2）应拒绝', () => {
+  it('栅格含非法值（5）应拒绝，2/3/4 合法', () => {
     const map = validMap()
-    map.grid[2][2] = 3
+    map.grid[2][2] = 5
     expect(validateMap(map).ok).toBe(false)
-    // V2.1：2 是合法的"固定屏障"，应当通过校验
+    // V2.1：2 是合法的"固定屏障"；V2.4：3=沙子、4=金刚石 也合法
     map.grid[2][2] = 2
+    expect(validateMap(map).ok).toBe(true)
+    map.grid[2][2] = 3
+    expect(validateMap(map).ok).toBe(true)
+    map.grid[2][2] = 4
     expect(validateMap(map).ok).toBe(true)
   })
 

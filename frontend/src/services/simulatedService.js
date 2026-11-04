@@ -37,6 +37,9 @@ import {
   CELL_METERS,
   CHARGE_RATE,
   CLEAR_OBSTACLE_COST,
+  MATERIAL_COSTS,
+  MATERIAL_LABELS,
+  CLEARABLE_MATERIALS,
   LOW_BATTERY_THRESHOLD,
   MAX_MAP_SIZE,
   MIN_MAP_SIZE,
@@ -495,7 +498,8 @@ export class SimulatedService extends RobotService {
       if (cx < 0 || cx >= this._map.width || cy < 0 || cy >= this._map.height) {
         return null
       }
-      if (this._map.grid[cy][cx] === 1) {
+      // V2.4.0：任何材质都会挡住超声测距
+      if (this._map.grid[cy][cx] !== 0) {
         return step * CELL_METERS
       }
     }
@@ -843,7 +847,9 @@ export class SimulatedService extends RobotService {
     this._patrol.blockedBy = null
     this._state.path = []
     this._pending = this._pending.filter(
-      ([x, y]) => x > 0 && y > 0 && x < map.width - 1 && y < map.height - 1 && map.grid[y][x] === 1
+      ([x, y]) =>
+        x > 0 && y > 0 && x < map.width - 1 && y < map.height - 1 &&
+        CLEARABLE_MATERIALS.includes(map.grid[y][x])
     )
     // 机器人所在格被画成障碍时，复位到起点（与后端一致）。
     if (!this._canMoveTo([this._state.x, this._state.y])) {
@@ -1026,7 +1032,7 @@ export class SimulatedService extends RobotService {
       if (
         target[0] >= 0 && target[0] < this._map.width &&
         target[1] >= 0 && target[1] < this._map.height &&
-        this._map.grid[target[1]][target[0]] === 1
+        CLEARABLE_MATERIALS.includes(this._map.grid[target[1]][target[0]])
       ) {
         if (isBoundaryCell(target[0], target[1], this._map.width, this._map.height)) {
           this._state.mode = 'manual'
@@ -1076,7 +1082,8 @@ export class SimulatedService extends RobotService {
       goal,
       this._state.battery,
       BATTERY_MOVE_COST,
-      CLEAR_OBSTACLE_COST
+      CLEAR_OBSTACLE_COST,
+      MATERIAL_COSTS
     )
     if (plan.path.length === 0) {
       // V2.3.1：不可达时给出"拆哪一格能通"的建议，并保留规划结果供预览卡
@@ -1111,7 +1118,8 @@ export class SimulatedService extends RobotService {
       this._plan.goal,
       this._state.battery,
       BATTERY_MOVE_COST,
-      CLEAR_OBSTACLE_COST
+      CLEAR_OBSTACLE_COST,
+      MATERIAL_COSTS
     )
   }
 
@@ -1123,7 +1131,7 @@ export class SimulatedService extends RobotService {
    * @param {0|1|2} value - 0=通行 1=障碍 2=固定屏障。
    */
   setCell(x, y, value) {
-    if (![0, 1, 2].includes(value)) return
+    if (![0, 1, 2, 3, 4].includes(value)) return
     if (x < 0 || x >= this._map.width || y < 0 || y >= this._map.height) return
     if (isBoundaryCell(x, y, this._map.width, this._map.height)) {
       this._emitEvent('notice', { message: '最外环是地图边界，不能编辑' })
@@ -1185,14 +1193,17 @@ export class SimulatedService extends RobotService {
       this._emitState()
       return
     }
-    if (this._map.grid[y][x] !== 1) {
+    if (this._map.grid[y][x] !== 1 && !CLEARABLE_MATERIALS.includes(this._map.grid[y][x])) {
       this._emitEvent('notice', { message: `位置 [${x}, ${y}] 没有障碍，无需清除` })
       this._emitState()
       return
     }
-    if (this._state.battery < CLEAR_OBSTACLE_COST) {
+    // V2.4.0：按材质计价（石头 5%、沙子 2%、金刚石 20%）
+    const materialValue = this._map.grid[y][x]
+    const clearCost = MATERIAL_COSTS[materialValue] ?? CLEAR_OBSTACLE_COST
+    if (this._state.battery < clearCost) {
       this._emitEvent('notice', {
-        message: `电量不足（需 ${CLEAR_OBSTACLE_COST.toFixed(0)}%），无法清障；请先返航充电`,
+        message: `电量不足（清除${MATERIAL_LABELS[materialValue] || '障碍'}需 ${clearCost.toFixed(0)}%），无法清障；请先返航充电`,
       })
       this._emitState()
       return
@@ -1200,10 +1211,10 @@ export class SimulatedService extends RobotService {
     this._map.grid[y][x] = 0
     this._state.battery = Math.max(
       0.0,
-      parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2))
+      parseFloat((this._state.battery - clearCost).toFixed(2))
     )
     this._emitEvent('notice', {
-      message: `已清除障碍 [${x}, ${y}]，消耗电量 ${CLEAR_OBSTACLE_COST.toFixed(0)}%`,
+      message: `已清除${MATERIAL_LABELS[materialValue] || '障碍'} [${x}, ${y}]，消耗电量 ${clearCost.toFixed(0)}%`,
     })
     this._pending = this._pending.filter((c) => !(c[0] === x && c[1] === y))
     if (this._blocked && this._blocked.cell[0] === x && this._blocked.cell[1] === y) {
@@ -1236,21 +1247,26 @@ export class SimulatedService extends RobotService {
       return
     }
     let cleared = 0
+    let spent = 0
     for (const [x, y] of this._plan.clearable) {
       if (isBoundaryCell(x, y, this._map.width, this._map.height)) {
         continue
       }
-      if (this._map.grid[y][x] !== 1) {
+      const materialValue = this._map.grid[y][x]
+      if (!CLEARABLE_MATERIALS.includes(materialValue)) {
         continue
       }
-      if (this._state.battery < CLEAR_OBSTACLE_COST) {
+      // V2.4.0：逐格按材质扣电
+      const cellCost = MATERIAL_COSTS[materialValue] ?? CLEAR_OBSTACLE_COST
+      if (this._state.battery < cellCost) {
         break
       }
       this._map.grid[y][x] = 0
       this._state.battery = Math.max(
         0.0,
-        parseFloat((this._state.battery - CLEAR_OBSTACLE_COST).toFixed(2))
+        parseFloat((this._state.battery - cellCost).toFixed(2))
       )
+      spent += cellCost
       this._pending = this._pending.filter((c) => !(c[0] === x && c[1] === y))
       cleared += 1
     }
@@ -1262,7 +1278,7 @@ export class SimulatedService extends RobotService {
     }
     this._emitEvent('notice', {
       message: cleared
-        ? `已按规划清除 ${cleared} 处障碍，共耗电 ${(cleared * CLEAR_OBSTACLE_COST).toFixed(0)}%`
+        ? `已按规划清除 ${cleared} 处障碍，共耗电 ${spent.toFixed(0)}%`
         : '电量不足，未能清除任何障碍；请先返航充电',
     })
     if (this._patrol.running) {
@@ -1279,7 +1295,8 @@ export class SimulatedService extends RobotService {
   clearNearestPending() {
     this._pending = this._pending.filter(
       ([x, y]) =>
-        x > 0 && y > 0 && x < this._map.width - 1 && y < this._map.height - 1 && this._map.grid[y][x] === 1
+        x > 0 && y > 0 && x < this._map.width - 1 && y < this._map.height - 1 &&
+        CLEARABLE_MATERIALS.includes(this._map.grid[y][x])
     )
     if (this._pending.length === 0) {
       this._emitEvent('notice', { message: '没有待清障记录' })

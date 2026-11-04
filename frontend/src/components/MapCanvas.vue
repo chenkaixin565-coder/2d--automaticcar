@@ -79,6 +79,11 @@ const props = defineProps({
     type: String,
     default: 'pan',
   },
+  // 障碍模式下落的材质值（V2.4.0）：1=石头 3=沙子 4=金刚石
+  paintValue: {
+    type: Number,
+    default: 1,
+  },
   isDark: {
     type: Boolean,
     default: false,
@@ -643,10 +648,16 @@ function drawObstacles(ctx) {
 
   const barrierColor = props.isDark ? '#111827' : '#1e293b'
   const barrierHatch = props.isDark ? '#475569' : '#64748b'
+  // V2.4.0：不同材质用不同颜色，一眼能分出"清障成本"
+  const sandColor = props.isDark ? '#a16207' : '#d9a441'
+  const sandDot = props.isDark ? '#fcd34d' : '#f7e2a8'
+  const diamondColor = props.isDark ? '#0e7490' : '#22d3ee'
+  const diamondShine = props.isDark ? '#a5f3fc' : '#ecfeff'
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      if (grid[y][x] === 2) {
+      const value = grid[y][x]
+      if (value === 2) {
         // 固定屏障（V2.1）：深色底 + 网格纹，与普通障碍区分开
         const bx = x * CELL_PIXELS
         const by = y * CELL_PIXELS
@@ -661,7 +672,7 @@ function drawObstacles(ctx) {
         ctx.stroke()
         continue
       }
-      if (grid[y][x] !== 1) continue
+      if (value !== 1 && value !== 3 && value !== 4) continue
       const px = x * CELL_PIXELS
       const py = y * CELL_PIXELS
       if (isBoundaryCell(x, y, width, height)) {
@@ -676,9 +687,34 @@ function drawObstacles(ctx) {
         ctx.moveTo(px + CELL_PIXELS, py)
         ctx.lineTo(px, py + CELL_PIXELS)
         ctx.stroke()
-      } else {
+        continue
+      }
+      if (value === 1) {
         ctx.fillStyle = normalColor
         ctx.fillRect(px, py, CELL_PIXELS, CELL_PIXELS)
+      } else if (value === 3) {
+        // 沙子：暖黄色 + 细沙点
+        ctx.fillStyle = sandColor
+        ctx.fillRect(px, py, CELL_PIXELS, CELL_PIXELS)
+        ctx.fillStyle = sandDot
+        const r = Math.max(0.8, 1.2 / props.scale)
+        for (const [ox, oy] of [[0.28, 0.32], [0.62, 0.2], [0.5, 0.62], [0.78, 0.72]]) {
+          ctx.beginPath()
+          ctx.arc(px + ox * CELL_PIXELS, py + oy * CELL_PIXELS, r, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      } else {
+        // 金刚石：青色 + 高光切面
+        ctx.fillStyle = diamondColor
+        ctx.fillRect(px, py, CELL_PIXELS, CELL_PIXELS)
+        ctx.fillStyle = diamondShine
+        ctx.beginPath()
+        ctx.moveTo(px + CELL_PIXELS * 0.5, py + CELL_PIXELS * 0.16)
+        ctx.lineTo(px + CELL_PIXELS * 0.8, py + CELL_PIXELS * 0.5)
+        ctx.lineTo(px + CELL_PIXELS * 0.5, py + CELL_PIXELS * 0.84)
+        ctx.lineTo(px + CELL_PIXELS * 0.2, py + CELL_PIXELS * 0.5)
+        ctx.closePath()
+        ctx.fill()
       }
     }
   }
@@ -983,7 +1019,9 @@ const paintModes = ['obstacle', 'barrier', 'erase']
 function paintValueFor(mode) {
   if (mode === 'barrier') return 2
   if (mode === 'erase') return 0
-  return 1
+  // V2.4.0：障碍模式按当前选中的材质落笔（石头/沙子/金刚石）
+  const material = [1, 3, 4].includes(props.paintValue) ? props.paintValue : 1
+  return material
 }
 
 const downPos = ref(null)
@@ -1108,7 +1146,8 @@ function applyClick(cell) {
   if (props.editMode === 'goal') {
     emit('set-goal', { x, y })
   } else if (props.editMode === 'clear') {
-    if (props.map.grid[y][x] === 1) emit('clear-obstacle', { x, y })
+    // V2.4.0：石头 / 沙子 / 金刚石都可以点着清
+    if ([1, 3, 4].includes(props.map.grid[y][x])) emit('clear-obstacle', { x, y })
   } else if (props.editMode === 'start') {
     if (props.map.grid[y][x] === 0) emit('set-start', { x, y })
   } else if (props.editMode === 'charge') {

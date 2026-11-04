@@ -48,8 +48,10 @@ class GridMap(BaseModel):
             if len(row) != row_len:
                 raise ValueError("栅格数组各行长度必须一致")
             for cell in row:
-                if cell not in (0, 1, 2):
-                    raise ValueError("栅格取值只能为 0（通行）、1（障碍）或 2（固定屏障）")
+                if cell not in (0, 1, 2, 3, 4):
+                    raise ValueError(
+                        "栅格取值只能为 0（通行）、1（石头）、2（固定屏障）、3（沙子）、4（金刚石）"
+                    )
         return value
 
     @model_validator(mode="after")

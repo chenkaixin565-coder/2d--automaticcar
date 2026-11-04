@@ -63,6 +63,21 @@
             {{ mode.label }}
           </button>
         </div>
+        <!-- 材质选择（V2.4.0）：障碍模式下可切石头/沙子/金刚石 -->
+        <div v-if="editMode === 'obstacle'" class="flex gap-1 overflow-x-auto no-scrollbar">
+          <button
+            v-for="material in materials"
+            :key="material.value"
+            type="button"
+            class="shrink-0 px-2 py-1 text-[10px] rounded-full border transition-colors"
+            :class="paintValue === material.value
+              ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+              : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300'"
+            @click="$emit('set-material', material.value)"
+          >
+            {{ material.label }}
+          </button>
+        </div>
         <div class="flex gap-2">
           <button
             type="button"
@@ -125,14 +140,18 @@
  * 组件功能：移动端底部快捷控制条
  * 作者：智能巡检机器人二维仿真系统 V1.2 前端开发组
  * 日期：2026-10-25
- * 版本：V1.2
+ * 版本：V2.4.0
  */
+
+import { MATERIALS } from '../services/rules.js'
 
 defineProps({
   robot: { type: Object, required: true },
   patrolStatus: { type: Object, required: true },
   editMode: { type: String, default: 'nav' },
   detailOpen: { type: Boolean, default: false },
+  // 当前障碍材质（V2.4.0）：1=石头 3=沙子 4=金刚石
+  paintValue: { type: Number, default: 1 },
 })
 
 const emit = defineEmits([
@@ -142,11 +161,15 @@ const emit = defineEmits([
   'start-patrol',
   'stop-patrol',
   'set-edit-mode',
+  'set-material',
   'fit-map',
   'toggle-detail',
   'open-plan',
   'open-library',
 ])
+
+/** 可绘制的障碍材质（V2.4.0），来自共享规则。 */
+const materials = MATERIALS
 
 const editModes = [
   { key: 'obstacle', label: '障碍' },

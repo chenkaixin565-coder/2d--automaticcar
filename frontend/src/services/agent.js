@@ -13,6 +13,8 @@
  * 规则解析器处理，前端只负责展示返回结果。
  */
 
+import { CLEAR_OBSTACLE_COST, CLEARABLE_MATERIALS, MATERIAL_COSTS, MATERIAL_LABELS } from './rules.js'
+
 /** 工具白名单：与后端 TOOL_SPECS 同名同参。 */
 export const TOOL_SPECS = {
   status: { description: '查询机器人当前位置、电量、模式与巡检进度', destructive: false },
@@ -21,8 +23,8 @@ export const TOOL_SPECS = {
   stop_patrol: { description: '停止当前自动巡检任务', destructive: false },
   go_charge: { description: '让机器人返回充电点', destructive: false },
   move: { description: '手动移动一格', destructive: false },
-  clear_obstacle: { description: '清除指定格子的障碍（扣 5% 电量）', destructive: true },
-  set_cell: { description: '编辑地图格子（空闲 / 障碍 / 屏障）', destructive: true },
+  clear_obstacle: { description: '清除指定格子的障碍（按材质扣电）', destructive: true },
+  set_cell: { description: '编辑地图格子（空闲 / 石头 / 屏障 / 沙子 / 金刚石）', destructive: true },
   reset: { description: '复位机器人到起点并恢复满电', destructive: true },
   new_map: { description: '新建一张空白地图', destructive: true },
 }
@@ -173,6 +175,8 @@ export function parseRules(text, heading = [1, 0]) {
   if (has(normalized, SET_WORDS) && coords.length > 0) {
     let value = 0
     if (has(normalized, BARRIER_WORDS)) value = 2
+    else if (has(normalized, ['金刚石', '钻石', 'diamond'])) value = 4
+    else if (has(normalized, ['沙子', '沙地', 'sand'])) value = 3
     else if (has(normalized, OBSTACLE_WORDS)) value = 1
     else if (has(normalized, EMPTY_WORDS)) value = 0
     return {
@@ -320,10 +324,13 @@ export function validateCall(tool, args, context) {
     if (!inBounds(cell[0], cell[1])) throw new AgentError(`目标格 [${cell[0]}, ${cell[1]}] 在地图之外`)
     const value = map.grid[cell[1]][cell[0]]
     if (value === 2) throw new AgentError(`[${cell[0]}, ${cell[1]}] 是固定屏障，机器人无法清除`)
-    if (value !== 1) throw new AgentError(`[${cell[0]}, ${cell[1]}] 不是障碍物，无需清除`)
-    if (state.battery < limits.clearCost) {
+    if (!CLEARABLE_MATERIALS.includes(value)) {
+      throw new AgentError(`[${cell[0]}, ${cell[1]}] 不是障碍物，无需清除`)
+    }
+    const cost = MATERIAL_COSTS[value] ?? limits.clearCost
+    if (state.battery < cost) {
       throw new AgentError(
-        `电量不足（当前 ${state.battery.toFixed(1)}%），清除一处需要 ${limits.clearCost.toFixed(0)}%`
+        `电量不足（当前 ${state.battery.toFixed(1)}%），清除${MATERIAL_LABELS[value] || '障碍'}需要 ${cost.toFixed(0)}%`
       )
     }
     return { cell }
@@ -333,7 +340,9 @@ export function validateCall(tool, args, context) {
     const x = asInt(args.x, 'x')
     const y = asInt(args.y, 'y')
     const value = asInt(args.value ?? 0, 'value')
-    if (![0, 1, 2].includes(value)) throw new AgentError('格子取值只能是 0（空闲）、1（障碍）或 2（固定屏障）')
+    if (![0, 1, 2, 3, 4].includes(value)) {
+      throw new AgentError('格子取值只能是 0（空闲）、1（石头）、2（固定屏障）、3（沙子）、4（金刚石）')
+    }
     if (!inBounds(x, y)) throw new AgentError(`坐标 [${x}, ${y}] 在地图之外`)
     if (isBoundary(x, y)) throw new AgentError('最外环是地图边界，不能编辑')
     const isKeyCell =
@@ -439,20 +448,23 @@ async function executeTool(tool, args, service, map) {
   }
 
   if (tool === 'clear_obstacle') {
+    const materialValue = map.grid[args.cell[1]][args.cell[0]]
+    const unitCost = MATERIAL_COSTS[materialValue] ?? CLEAR_OBSTACLE_COST
+    const materialLabel = MATERIAL_LABELS[materialValue] || '障碍'
     service.clearObstacleAt(args.cell)
     const after = service.getState()
     const cleared = map.grid[args.cell[1]][args.cell[0]] === 0
     if (!cleared) return { ok: false, message: `清除 [${args.cell[0]}, ${args.cell[1]}] 失败（可能电量不足）。`, result: after }
     return {
       ok: true,
-      message: `已清除 [${args.cell[0]}, ${args.cell[1]}] 的障碍，扣除 5% 电量，剩余 ${after.battery.toFixed(1)}%。`,
+      message: `已清除${materialLabel} [${args.cell[0]}, ${args.cell[1]}]，扣除 ${unitCost.toFixed(0)}% 电量，剩余 ${after.battery.toFixed(1)}%。`,
       result: after,
     }
   }
 
   if (tool === 'set_cell') {
     service.setCell(args.x, args.y, args.value)
-    const label = { 0: '空闲', 1: '障碍', 2: '固定屏障' }[args.value]
+    const label = { 0: '空闲', 1: '石头', 2: '固定屏障', 3: '沙子', 4: '金刚石' }[args.value]
     return { ok: true, message: `已把 [${args.x}, ${args.y}] 设为${label}。`, result: needMapSnapshot(map) }
   }
 
@@ -515,7 +527,7 @@ function payload(options) {
  */
 export function describeArgs(tool, args) {
   if (tool === 'clear_obstacle') {
-    return `清除 [${args.cell[0]}, ${args.cell[1]}] 的障碍，扣 5% 电量`
+    return `清除 [${args.cell[0]}, ${args.cell[1]}] 的障碍（按材质扣电）`
   }
   if (tool === 'set_cell') {
     const label = { 0: '空闲', 1: '障碍', 2: '固定屏障' }[args.value]

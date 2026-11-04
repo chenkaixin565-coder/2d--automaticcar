@@ -37,6 +37,8 @@ from app.core.constants import (
     ANOMALY_OBSTACLE,
     CELL_BARRIER,
     CELL_OBSTACLE,
+    CLEARABLE_CELLS,
+    MATERIAL_LABELS,
     MODE_BLOCKED,
     MODE_CHARGING,
     MODE_EMPTY,
@@ -465,6 +467,7 @@ class SimulationEngine:
             self.battery,
             config.settings.battery_move_cost,
             config.settings.clear_obstacle_cost,
+            config.settings.material_costs,
         )
         if not plan["path"]:
             # V2.3.1：目标完全被封死时，给出"拆哪一格能通"的建议，
@@ -518,6 +521,7 @@ class SimulationEngine:
             self.battery,
             config.settings.battery_move_cost,
             config.settings.clear_obstacle_cost,
+            config.settings.material_costs,
         )
 
     def _command_payload(self) -> dict:
@@ -530,11 +534,11 @@ class SimulationEngine:
 
         :param x: 列坐标。
         :param y: 行坐标。
-        :param value: 0=通行 1=障碍 2=固定屏障。
+        :param value: 0=通行 1=石头 2=固定屏障 3=沙子 4=金刚石。
         :return: 控制类统一响应体（state 数据 + map）。
         """
-        if value not in (0, 1, 2):
-            self._emit_notice("格子取值只能是 0（通行）、1（障碍）或 2（固定屏障）")
+        if value not in (0, 1, 2, 3, 4):
+            self._emit_notice("格子取值只能是 0（通行）、1（石头）、2（固定屏障）、3（沙子）、4（金刚石）")
             return self._command_payload()
         if not self.map.in_bounds(x, y):
             return self._command_payload()
@@ -579,20 +583,26 @@ class SimulationEngine:
         if self.map.grid[cell_y][cell_x] == CELL_BARRIER:
             self._emit_notice("该位置是固定屏障，机器人无法清除；请在「擦除」编辑模式下人工擦除")
             return self._command_payload()
-        if self.map.grid[cell_y][cell_x] != CELL_OBSTACLE:
+        value = self.map.grid[cell_y][cell_x]
+        if value not in CLEARABLE_CELLS:
             self._emit_notice(f"位置 [{cell_x}, {cell_y}] 没有障碍，无需清除")
             return self._command_payload()
 
-        cost = config.settings.clear_obstacle_cost
+        # V2.4.0：按材质计价（石头 5%、沙子 2%、金刚石 20%）。
+        cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
         if self.battery + 1e-9 < cost:
             logger.info("清障被拒绝：电量 %.1f%% 低于单次成本 %.1f%%", self.battery, cost)
-            self._emit_notice(f"电量不足（需 {cost:.0f}%），无法清障；请先返航充电")
+            self._emit_notice(
+                f"电量不足（清除{MATERIAL_LABELS.get(value, '障碍')}需 {cost:.0f}%），无法清障；请先返航充电"
+            )
             return self._command_payload()
 
         self.map.grid[cell_y][cell_x] = 0
         self.battery = max(0.0, round(self.battery - cost, 2))
-        logger.info("手动清障：(%d, %d) 已清除，耗电 %.1f%%", cell_x, cell_y, cost)
-        self._emit_notice(f"已清除障碍 [{cell_x}, {cell_y}]，消耗电量 {cost:.0f}%")
+        logger.info("手动清障：(%d, %d) %s 已清除，耗电 %.1f%%", cell_x, cell_y, MATERIAL_LABELS.get(value, ""), cost)
+        self._emit_notice(
+            f"已清除{MATERIAL_LABELS.get(value, '障碍')} [{cell_x}, {cell_y}]，消耗电量 {cost:.0f}%"
+        )
 
         self.pending = [c for c in self.pending if not (c[0] == cell_x and c[1] == cell_y)]
         if self.blocked and self.blocked.get("cell") == [cell_x, cell_y]:
@@ -622,18 +632,22 @@ class SimulationEngine:
             self._emit_notice("当前没有可执行的清障目标")
             return self._command_payload()
 
-        cost = config.settings.clear_obstacle_cost
         cleared = 0
+        spent = 0.0
         for cell_x, cell_y in [list(c) for c in self.plan["clearable"]]:
             if self.map.is_boundary(cell_x, cell_y):
                 continue
-            if self.map.grid[cell_y][cell_x] != CELL_OBSTACLE:
+            value = self.map.grid[cell_y][cell_x]
+            if value not in CLEARABLE_CELLS:
                 continue
+            # V2.4.0：逐格按材质扣电
+            cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
             if self.battery + 1e-9 < cost:
-                logger.info("批量清障中止：电量 %.1f%% 不足以继续", self.battery)
+                logger.info("批量清障中止：电量 %.1f%% 不足以清除 %s", self.battery, MATERIAL_LABELS.get(value, ""))
                 break
             self.map.grid[cell_y][cell_x] = 0
             self.battery = max(0.0, round(self.battery - cost, 2))
+            spent += cost
             self.pending = [c for c in self.pending if not (c[0] == cell_x and c[1] == cell_y)]
             cleared += 1
 
@@ -641,9 +655,9 @@ class SimulationEngine:
             self.blocked = None
             self.paused = False
             self.patrol.paused = False
-        logger.info("按规划批量清障：清除 %d 处，耗电 %.1f%%", cleared, cleared * cost)
+        logger.info("按规划批量清障：清除 %d 处，耗电 %.1f%%", cleared, spent)
         if cleared:
-            self._emit_notice(f"已按规划清除 {cleared} 处障碍，共耗电 {cleared * cost:.0f}%")
+            self._emit_notice(f"已按规划清除 {cleared} 处障碍，共耗电 {spent:.0f}%")
         else:
             self._emit_notice("电量不足，未能清除任何障碍；请先返航充电")
         if self.patrol.running:
@@ -664,7 +678,7 @@ class SimulationEngine:
             return self._command_payload()
         # 剔除已不存在的记录（可能已被其它途径清除）。
         self.pending = [
-            c for c in self.pending if self.map.in_bounds(*c) and self.map.grid[c[1]][c[0]] == CELL_OBSTACLE
+            c for c in self.pending if self.map.in_bounds(*c) and self.map.grid[c[1]][c[0]] in CLEARABLE_CELLS
         ]
         if not self.pending:
             self._emit_notice("没有待清障记录")

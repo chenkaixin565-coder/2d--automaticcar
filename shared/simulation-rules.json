@@ -9,6 +9,11 @@
     "clear_cost": 5.0,
     "charge_rate": 1.0
   },
+  "materials": [
+    { "value": 1, "key": "stone", "label": "石头", "clear_cost": 5.0 },
+    { "value": 3, "key": "sand", "label": "沙子", "clear_cost": 2.0 },
+    { "value": 4, "key": "diamond", "label": "金刚石", "clear_cost": 20.0 }
+  ],
   "sensor": {
     "cell_meters": 0.5,
     "range_meters": 5.0,

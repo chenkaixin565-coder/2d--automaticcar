@@ -37,10 +37,14 @@ export function validateMap(map) {
       (row) =>
         Array.isArray(row) &&
         row.length === width &&
-        row.every((cell) => cell === 0 || cell === 1 || cell === 2)
+        row.every((cell) => cell === 0 || cell === 1 || cell === 2 || cell === 3 || cell === 4)
     )
   ) {
-    return { ok: false, error: '栅格数据不完整：应为 height 行、每行 width 个 0/1/2 值（0=通行 1=障碍 2=固定屏障）' }
+    return {
+      ok: false,
+      error:
+        '栅格数据不完整：应为 height 行、每行 width 个 0~4 的值（0=通行 1=石头 2=固定屏障 3=沙子 4=金刚石）',
+    }
   }
 
   const inBounds = (p) =>
