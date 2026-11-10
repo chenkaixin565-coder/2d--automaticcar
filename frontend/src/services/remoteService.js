@@ -52,6 +52,8 @@ export class RemoteService extends RobotService {
     this._authState = null
     /** 当前连接是否具备操作权限（V2.2.1：只读连接也能收到状态帧）。 */
     this._canControl = false
+    /** 是否已经收到过服务端的权限结论（V2.4.1）：未收到前不拦截，避免刚打开就误弹框。 */
+    this._authChecked = false
     /** 标识本服务为远程后端实现，供上层区分数据源。 */
     this.isRemote = true
 
@@ -170,6 +172,7 @@ export class RemoteService extends RobotService {
       this._emitEvent('empty', frame.data)
     } else if (frame.type === 'auth_state') {
       this._canControl = Boolean(frame.data && frame.data.can_control)
+      this._authChecked = true
       if (this._canControl) this._authState = null
     } else if (frame.type === 'auth_required') {
       // 只读连接尝试下发指令：服务端回一帧鉴权提示，前端弹密钥框
@@ -273,6 +276,9 @@ export class RemoteService extends RobotService {
    * @returns {boolean} 是否成功通过 WS 下发。
    */
   _sendCommand(action, payload) {
+    // V2.4.1：已知没有权限就先弹框，不再把命令发出去（返回 true 表示"已处理"，
+    // 调用方因此不会回退 REST 再触发一次鉴权弹窗）。
+    if (!this._ensureControl()) return true
     if (this._connected && this._ws && this._ws.readyState === WebSocket.OPEN) {
       this._ws.send(JSON.stringify({ type: 'command', action, payload: payload || {} }))
       return true
@@ -290,12 +296,41 @@ export class RemoteService extends RobotService {
    */
   _requireAuth(info) {
     this._authState = info
+    // 一旦服务端明确拒绝，就说明"权限结论"已经到了（V2.4.1）
+    this._authChecked = true
     this._emitEvent('auth_required', info)
+  }
+
+  /**
+   * 写操作前置检查（V2.4.1）。
+   *
+   * 已知没有操作权限时直接弹密钥框并返回 false，调用方不要再改本地状态，
+   * 也不要再发请求——避免"先改图、再弹框、图上还留着改动"的错觉。
+   * 尚未收到服务端权限结论时返回 true（交给服务端判定），避免刚打开页面误弹框。
+   *
+   * @returns {boolean} 是否具备写权限。
+   */
+  _ensureControl() {
+    if (!this._authChecked || this._canControl) return true
+    this.requestAuth()
+    return false
   }
 
   /** 读取最近一次鉴权失败信息；没有则为 null。 */
   getAuthState() {
     return this._authState
+  }
+
+  /**
+   * 主动请求操作密钥（V2.4.1）。
+   *
+   * 之前只有"发出指令 → 服务端拒绝 → 才弹框"，地图编辑还会先把本地格子改掉，
+   * 看起来像"没密钥也能改图"。现在界面在真正改图之前调用本方法，先把框弹出来。
+   *
+   * @param {string} [message] - 弹框提示语。
+   */
+  requestAuth(message = '需要操作密钥才能修改状态') {
+    this._requireAuth({ code: 401, readonly: false, message })
   }
 
   /**
@@ -310,6 +345,8 @@ export class RemoteService extends RobotService {
     this._authState = null
     /** 当前连接是否具备操作权限（V2.2.1：只读连接也能收到状态帧）。 */
     this._canControl = false
+    // 重连后要重新等一次 auth_state，期间不拦截（V2.4.1）
+    this._authChecked = false
     this._connect()
   }
 
@@ -336,6 +373,11 @@ export class RemoteService extends RobotService {
   /** 当前连接是否具备操作权限（由服务端 auth_state 帧下发）。 */
   get canControl() {
     return this._canControl
+  }
+
+  /** 是否已经收到服务端的权限结论（V2.4.1）。 */
+  get authChecked() {
+    return this._authChecked
   }
 
   /** 后端基地址（同源时为空字符串），供地图库等 REST 调用复用。 */
@@ -381,6 +423,8 @@ export class RemoteService extends RobotService {
    * @param {Object} map - 完整地图对象。
    */
   updateMap(map) {
+    // V2.4.1：没有密钥时不要先把本地地图改掉，否则看起来像"改成功了"
+    if (!this._ensureControl()) return
     this._map = map
     try {
       localStorage.setItem(STORAGE_MAP_KEY, JSON.stringify(map))

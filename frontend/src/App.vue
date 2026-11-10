@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.4.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.4.1</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -1012,6 +1012,7 @@ function onRestart() {
  * @param {Object} loaded - 已通过校验的地图对象。
  */
 function onLoadMap(loaded) {
+  if (!ensureWritable()) return
   service.updateMap(loaded)
   Object.assign(map, service.getMap())
   mapPresetKey.value = null
@@ -1062,6 +1063,7 @@ function onOpenDesigner(options) {
  * @param {{name: string, map: Object}} payload - 名称与地图。
  */
 function onDesignerSave({ name, map: designed }) {
+  if (!ensureWritable()) return
   saveLocal(name, designed)
   service.updateMap(designed)
   Object.assign(map, service.getMap())
@@ -1085,6 +1087,7 @@ function onOpenNewMap() {
  * @param {{width: number, height: number}} size - 新地图尺寸。
  */
 function onNewMapConfirm({ width, height }) {
+  if (!ensureWritable()) return
   showNewMapModal.value = false
   service.newMap(width, height)
   Object.assign(map, service.getMap())
@@ -1133,11 +1136,28 @@ function markMapCustom() {
 }
 
 /**
+ * 写操作前的权限检查（V2.4.1）。
+ *
+ * 远程模式下如果已经知道没有操作权限，先弹出密钥框并返回 false。
+ * 调用方必须在本地说图/改状态之前调用，避免"画面上改了、服务端其实没接收"。
+ *
+ * @returns {boolean} 是否允许继续写操作。
+ */
+function ensureWritable() {
+  if (service.canControl !== false) return true
+  // 还没收到服务端的权限结论（刚打开/重连中）：交给服务端判定
+  if (service.authChecked === false) return true
+  if (typeof service.requestAuth === 'function') service.requestAuth()
+  return false
+}
+
+/**
  * 编辑单个格子（V2.1）：障碍 / 固定屏障 / 擦除，都不消耗电量。
  *
  * @param {{x: number, y: number, value: 0|1|2}} payload - 格子坐标与目标值。
  */
 function onEditCell({ x, y, value }) {
+  if (!ensureWritable()) return
   if (x < 0 || x >= map.width || y < 0 || y >= map.height) return
   // 真正的边界：最外环不可绘制也不可擦除
   if (isBoundaryCell(x, y, map.width, map.height)) {
@@ -1173,6 +1193,7 @@ function onEditCell({ x, y, value }) {
 }
 
 function onSetGoal({ x, y }) {
+  if (!ensureWritable()) return
   if (map.grid[y][x] !== 0) return
   const goals = map.goals
   const index = goals.findIndex((g) => g[0] === x && g[1] === y)
@@ -1186,6 +1207,7 @@ function onSetGoal({ x, y }) {
 }
 
 function onSetStart({ x, y }) {
+  if (!ensureWritable()) return
   if (map.grid[y][x] !== 0) return
   map.start = [x, y]
   markMapCustom()
@@ -1193,6 +1215,7 @@ function onSetStart({ x, y }) {
 }
 
 function onSetCharge({ x, y }) {
+  if (!ensureWritable()) return
   if (map.grid[y][x] !== 0) return
   map.charge_point = [x, y]
   markMapCustom()
@@ -1200,12 +1223,14 @@ function onSetCharge({ x, y }) {
 }
 
 function onClearGoals() {
+  if (!ensureWritable()) return
   map.goals = []
   markMapCustom()
   service.updateMap(map)
 }
 
 function onRemoveGoal(index) {
+  if (!ensureWritable()) return
   map.goals.splice(index, 1)
   markMapCustom()
   service.updateMap(map)
@@ -1216,6 +1241,7 @@ function onRemoveGoal(index) {
  * 清理回放数据并按新尺寸适配视图。
  */
 function onSelectPreset(key) {
+  if (!ensureWritable()) return
   service.loadPreset(key)
   // 服务层可能替换了内部地图对象，这里把新字段同步进响应式包装
   Object.assign(map, service.getMap())
@@ -1238,6 +1264,7 @@ function onExportMap() {
  * @param {Object} imported - 已通过结构校验的地图对象。
  */
 function onImportMap(imported) {
+  if (!ensureWritable()) return
   Object.assign(map, imported)
   mapPresetKey.value = null
   service.updateMap(map)
