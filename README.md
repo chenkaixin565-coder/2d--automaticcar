@@ -10,6 +10,23 @@
 
 项目架构、模块职责和一次巡检的数据流见 [docs/architecture.md](docs/architecture.md)。
 
+## 在线演示
+
+- **工作组统一部署：待公布**（部署完成后在此补充域名，方便访客直接体验）
+- 自助部署（Render，可立即访问）：[https://irm-sim-2d.onrender.com](https://irm-sim-2d.onrender.com)
+- 静态版（无后端，纯浏览器仿真）：[https://chenkaixin565-coder.github.io/2d--automaticcar/](https://chenkaixin565-coder.github.io/2d--automaticcar/)
+
+## Docker 镜像
+
+结课提交只需要可拉取的镜像地址。镜像由 GitHub Actions 自动构建（见 `.github/workflows/docker-publish.yml`），内含前端构建产物、后端与共享规则，单容器即可运行。
+
+```bash
+docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.4.1
+docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.4.1
+```
+
+打开 http://localhost:8000 即可。也可以把 `V2.4.1` 换成 `latest`。
+
 ## 跑起来
 
 有 Docker 的话最省事：
