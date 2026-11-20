@@ -1102,9 +1102,10 @@ class SimulationEngine:
         self.blocked = {"cell": None, "reason": "unreachable", "goal": list(goal)}
         self.path = []
         self.speed = 0.0
-        logger.info("巡检点 %s 被固定屏障/边界隔断，已暂停等待用户决策", goal)
+        logger.info("巡检点 %s 被固定屏障/边界/斜角隔断，已暂停等待用户决策", goal)
         self._emit_blocked(
-            f"无法到达巡检点 [{goal[0]}, {goal[1]}]：没有可行路线（被固定屏障或边界隔断）；请选择跳过或停止"
+            f"无法到达巡检点 [{goal[0]}, {goal[1]}]：没有可行路线"
+            "（可能被固定屏障、地图边界或斜角挡住）；请跳过、停止，或到「擦除」模式检查"
         )
 
     def _handle_patrol_blocked(self, blocked_cell: list[int]) -> None:
