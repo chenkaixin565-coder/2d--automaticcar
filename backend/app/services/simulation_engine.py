@@ -34,7 +34,6 @@ from app.algorithms.smoothing import smooth_and_expand
 from app.core import config
 from app.core.constants import (
     ANOMALY_LOW_BATTERY,
-    ANOMALY_OBSTACLE,
     CELL_BARRIER,
     CELL_OBSTACLE,
     CLEARABLE_CELLS,
@@ -451,13 +450,16 @@ class SimulationEngine:
 
     # ---------- 一键路线规划与清障 ----------
 
-    def plan_route(self, goal: list[int]) -> dict:
+    def plan_route(self, goal: list[int], mode: str = "distance") -> dict:
         """
-        一键规划路线：理论最短路径（穿障）+ 电力预算内的待清障目标。
+        一键规划路线：可行路径（穿障）+ 电力预算内的待清障目标。
 
         V2.0 语义：这是"预览"，不移动机器人；点"开始巡检"才真正执行。
+        V2.5：`mode="energy"` 默认按总耗电选路（会绕开昂贵材质）；
+        `mode="distance"` 退回几何最短，供对照。
 
         :param goal: 目标巡检点坐标 [x, y]。
+        :param mode: "energy" / "distance"。
         :return: 路线规划字典（字段与前端 routePlanner.js 一致）。
         """
         plan = build_plan(
@@ -468,6 +470,7 @@ class SimulationEngine:
             config.settings.battery_move_cost,
             config.settings.clear_obstacle_cost,
             config.settings.material_costs,
+            mode,
         )
         if not plan["path"]:
             # V2.3.1：目标完全被封死时，给出"拆哪一格能通"的建议，
@@ -522,6 +525,7 @@ class SimulationEngine:
             config.settings.battery_move_cost,
             config.settings.clear_obstacle_cost,
             config.settings.material_costs,
+            self.plan.get("mode", "energy"),
         )
 
     def _command_payload(self) -> dict:
@@ -559,6 +563,37 @@ class SimulationEngine:
             self.paused = False
             self.patrol.paused = False
         self._refresh_plan()
+        self._emit_map()
+        return self._command_payload()
+
+    def drop_obstacle_ahead(self, value: int = 1) -> dict:
+        """
+        测试用：在机器人正前方投放一个障碍（V2.5 动态障碍场景）。
+
+        用来验证"行驶途中突然掉下障碍物"：下一 tick 机器人会发现目标格被占，
+        自动重规划或暂停请求决策。
+
+        :param value: 投放的材质（1=石头 3=沙子 4=金刚石）。
+        :return: 控制类统一响应体（state 数据 + map）。
+        """
+        if value not in CLEARABLE_CELLS:
+            value = CELL_OBSTACLE
+        dx, dy = self._theta_to_step(self.theta)
+        x, y = self.x + dx, self.y + dy
+        if not self.map.in_bounds(x, y) or self.map.is_boundary(x, y):
+            self._emit_notice("正前方是边界，无法投放障碍")
+            return self._command_payload()
+        if (x, y) == self.map.start or (x, y) == tuple(self.map.charge_point) or (x, y) in self.map.goals:
+            self._emit_notice("正前方是起点/充电点/巡检点，无法投放障碍")
+            return self._command_payload()
+        if self.map.grid[y][x] != 0:
+            self._emit_notice(f"正前方 [{x}, {y}] 已经有障碍了")
+            return self._command_payload()
+        self.map.grid[y][x] = value
+        logger.info("动态障碍：在 (%d, %d) 投放 %s", x, y, MATERIAL_LABELS.get(value, "障碍"))
+        self._emit_notice(
+            f"已在正前方 [{x}, {y}] 投放{MATERIAL_LABELS.get(value, '障碍')}，用于验证动态障碍"
+        )
         self._emit_map()
         return self._command_payload()
 
@@ -689,13 +724,18 @@ class SimulationEngine:
 
     def carry_home(self) -> dict:
         """
-        空电搬回：把机器人传送回地图起点并恢复满电（仅空电状态可用）。
+        人工搬回：把机器人传送回地图起点并恢复满电。
+
+        V2.5：除了空电状态，返航路线被封死（charge_unreachable）时也允许人工搬回。
 
         :return: 控制类统一响应体（state 数据 + map）。
         """
-        if self.mode != MODE_EMPTY:
-            self._emit_notice("当前未处于空电状态，无需搬回")
+        rescue = self.blocked and self.blocked.get("reason") == "charge_unreachable"
+        if self.mode != MODE_EMPTY and not rescue:
+            self._emit_notice("当前未处于空电或返航受阻状态，无需搬回")
             return self._command_payload()
+        self.blocked = None
+        self.paused = False
         self.reset(keep_trail=True)
         self.battery = 100.0
         logger.info("机器人已搬回初始点 %s，电量恢复 100%%", self.map.start)
@@ -717,23 +757,35 @@ class SimulationEngine:
         if self.mode == MODE_BLOCKED:
             dx, dy = self._theta_to_step(self.theta)
             target = (self.x + dx, self.y + dy)
-            if self.map.in_bounds(*target) and self.map.grid[target[1]][target[0]] == CELL_OBSTACLE:
-                if self.map.is_boundary(*target):
-                    message = "前方是固定边界墙，无法清除；请向其他方向移动脱离"
-                    logger.info("一键排障：前方为边界墙 (%s, %s)，不清除", *target)
-                    self.mode = MODE_MANUAL
-                    self.path = []
+            # 边界墙优先判断：它也存成 1，但绝不能被"清障"。
+            if self.map.in_bounds(*target) and self.map.is_boundary(*target):
+                message = "前方是固定边界墙，无法清除；请向其他方向移动脱离"
+                logger.info("一键排障：前方为边界墙 (%s, %s)，不清除", *target)
+                self.mode = MODE_MANUAL
+                self.path = []
+                self._emit_notice(message)
+                return {"type": "notice", "data": {"message": message, "ok": False}}
+            if self.map.in_bounds(*target) and self.map.grid[target[1]][target[0]] in CLEARABLE_CELLS:
+                value = self.map.grid[target[1]][target[0]]
+                cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
+                # V2.5：手动排障也按材质扣电；电量不足必须明确失败，不能"假成功"。
+                if self.battery + 1e-9 < cost:
+                    message = (
+                        f"电量不足：清除{MATERIAL_LABELS.get(value, '障碍')}需要 {cost:.0f}%，"
+                        f"当前 {self.battery:.1f}%；请先返航充电"
+                    )
                     self._emit_notice(message)
-                    return {"type": "notice", "data": {"message": message}}
+                    return {"type": "notice", "data": {"message": message, "ok": False}}
                 self.map.grid[target[1]][target[0]] = 0
-                logger.info("一键排障：拆除前方障碍 (%s, %s)", *target)
+                self.battery = max(0.0, round(self.battery - cost, 2))
+                logger.info("一键排障：拆除前方障碍 (%s, %s)，耗电 %.1f%%", *target, cost)
             self.mode = MODE_MANUAL
             self.path = []
             self._refresh_plan()
             self._emit_map()
             message = "已排除前方障碍，恢复正常控制"
             self._emit_notice(message)
-            return {"type": "notice", "data": {"message": message}}
+            return {"type": "notice", "data": {"message": message, "ok": True}}
 
         # 巡检受阻（含目标不可达）：走"清障并继续"的正式流程，会扣电并恢复巡检。
         if self.blocked and self.blocked.get("cell"):
@@ -808,7 +860,11 @@ class SimulationEngine:
         self.plan = None
         self._plan_current_segment()
         logger.info("巡检启动，共 %d 个巡检点：%s", len(ordered), ordered)
-        if len(ordered) == 1:
+        # V2.5：第一段就不可达时，不再发"已出发"的误导提示，明确告诉用户卡在哪。
+        if self.paused or self.blocked:
+            goal = ordered[0]
+            self._emit_notice(f"巡检已启动，但无法前往 [{goal[0]}, {goal[1]}]，请先处理提示")
+        elif len(ordered) == 1:
             goal = ordered[0]
             self._emit_notice(f"已出发前往巡检点 [{goal[0]}, {goal[1]}]，单点任务")
         else:
@@ -952,22 +1008,17 @@ class SimulationEngine:
             )
             return
 
-        # 单格拆除也无解：保持旧行为——记异常、跳过该点、继续下一个。
-        self._emit_anomaly(
-            {
-                "time": datetime.now(timezone.utc).isoformat(),
-                "type": ANOMALY_OBSTACLE,
-                "message": f"无法到达巡检点 [{goal[0]}, {goal[1]}]，已跳过",
-                "position": [self.x, self.y],
-            }
-        )
-        self.patrol.advance()
+        # V2.5：连单格拆除都无解时，不再静默跳过——暂停并让用户决定跳过还是停止。
+        self.paused = True
+        self.patrol.paused = True
+        self.patrol.blocked_by = None
+        self.blocked = {"cell": None, "reason": "unreachable", "goal": list(goal)}
         self.path = []
-        if self.patrol.current_goal() is None:
-            self.patrol.finish()
-            self.mode = MODE_MANUAL
-        else:
-            self._plan_current_segment()
+        self.speed = 0.0
+        logger.info("巡检点 %s 四周被封死，已暂停等待用户决策", goal)
+        self._emit_blocked(
+            f"无法到达巡检点 [{goal[0]}, {goal[1]}]：四周被屏障封死，清障也打不通；请选择跳过或停止"
+        )
 
     def _handle_patrol_blocked(self, blocked_cell: list[int]) -> None:
         """
@@ -1089,8 +1140,22 @@ class SimulationEngine:
                 self.speed = 1.0
                 moving = True
             else:
-                # 返航路径被新障碍截断：重规划，若彻底不可达则退出充电状态。
-                self.path = astar(self.map.grid, (self.x, self.y), tuple(self.map.charge_point))["path"]
+                # 返航路径被新障碍截断：重规划；彻底不可达时暂停并请求人工介入（V2.5）。
+                result = astar(self.map.grid, (self.x, self.y), tuple(self.map.charge_point))
+                self.path = result["path"]
+                if not self.path and not (
+                    self.blocked and self.blocked.get("reason") == "charge_unreachable"
+                ):
+                    self.paused = True
+                    self.speed = 0.0
+                    self.blocked = {
+                        "cell": None,
+                        "reason": "charge_unreachable",
+                        "goal": list(self.map.charge_point),
+                    }
+                    self._emit_blocked(
+                        "无法返回充电点：返航路线被完全封死，请人工清障或搬回起点"
+                    )
 
         if arrived_goal:
             goal = self.patrol.current_goal()

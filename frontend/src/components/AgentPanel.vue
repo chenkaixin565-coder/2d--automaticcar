@@ -37,7 +37,7 @@
         <div>{{ entry.message }}</div>
         <div v-if="entry.tool" class="mt-0.5 text-[10px] opacity-70 font-mono">
           {{ entry.tool }}<span v-if="entry.latency !== undefined"> · {{ entry.latency }}ms</span>
-          <span v-if="entry.source === 'llm'"> · 本地大模型</span>
+          <span v-if="entry.source === 'llm'"> · 大模型</span>
           <span v-else-if="entry.source === 'rule-fallback'"> · 规则兜底</span>
         </div>
       </div>

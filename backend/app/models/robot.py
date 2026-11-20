@@ -52,6 +52,7 @@ class PlanGoalCommand(BaseModel):
     """一键路线规划指令：指定目标巡检点。"""
 
     goal: list[int] = Field(..., description="目标巡检点坐标 [x, y]")
+    mode: str = Field("energy", pattern="^(energy|distance)$", description="energy=最省电 / distance=最短")
 
 
 class ClearObstacleCommand(BaseModel):

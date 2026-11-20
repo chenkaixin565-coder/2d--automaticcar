@@ -42,27 +42,52 @@ function octile(a, b) {
 }
 
 /**
- * 计算起点到目标点的"理论最短路径"（可穿越普通障碍，边界墙/屏障不可穿越）。
+ * 计算起点到目标点的可行路径（可穿越可清除障碍，边界墙/屏障不可穿越）。
  *
- * @param {number[][]} grid - 二维数组，0=可通行，1=障碍物，2=固定屏障。
+ * V2.5：`mode="energy"` 时把进入格子的清障成本并入边权，会主动绕开金刚石；
+ * `mode="distance"` 退回几何最短（对照用）。
+ *
+ * @param {number[][]} grid - 二维数组，0=可通行，1/3/4=可清除障碍，2=固定屏障。
  * @param {number[]} start - 起点 [x, y]。
  * @param {number[]} goal - 目标 [x, y]。
+ * @param {number} moveCost - 每格移动耗电（斜向乘 √2）。
+ * @param {Object} materialCosts - {格子值: 清障耗电}。
+ * @param {'energy'|'distance'} mode - 选路目标。
  * @returns {Object} { path, obstacles_on_path, cost }，不可规划时 path 为空数组。
  */
-export function planRoute(grid, start, goal) {
+export function planRoute(
+  grid,
+  start,
+  goal,
+  moveCost = 0,
+  materialCosts = {},
+  mode = 'distance'
+) {
   const height = grid.length
   const width = height ? grid[0].length : 0
-  // 边界墙与固定屏障（2）不可穿越；普通障碍（1）视为"可通行但需清除"
+  const energyMode = mode === 'energy' && moveCost > 0
+  // 边界墙与固定屏障（2）不可穿越；可清除材质视为"可通行但需清除"
   const passable = (x, y) =>
     x > 0 && x < width - 1 && y > 0 && y < height - 1 && grid[y][x] !== 2
   if (!passable(start[0], start[1]) || !passable(goal[0], goal[1])) {
     return { path: [], obstacles_on_path: [], cost: 0 }
   }
 
+  /** 一步代价：几何距离，或移动耗电 + 进入格的清障耗电。 */
+  const stepCostFor = (nx, ny, length) => {
+    if (!energyMode) return length
+    const value = grid[ny][nx]
+    const extra = [1, 3, 4].includes(value) ? materialCosts[value] || 0 : 0
+    return moveCost * length + extra
+  }
+  /** 可采纳启发：至少每格的移动耗电。 */
+  const heuristic = (cell) => (energyMode ? octile(cell, goal) * moveCost : octile(cell, goal))
+
   const key = (x, y) => `${x},${y}`
   const startKey = key(start[0], start[1])
   const goalKey = key(goal[0], goal[1])
-  const openList = [{ key: startKey, pos: start, f: octile(start, goal), h: octile(start, goal) }]
+  const startH = heuristic(start)
+  const openList = [{ key: startKey, pos: start, f: startH, h: startH }]
   const closedSet = new Set()
   const cameFrom = new Map()
   const gScore = new Map([[startKey, 0]])
@@ -91,19 +116,19 @@ export function planRoute(grid, start, goal) {
       if (!passable(nx, ny)) continue
       const neighborKey = key(nx, ny)
       if (closedSet.has(neighborKey)) continue
-      let stepCost = 1
+      let length = 1
       if (dx !== 0 && dy !== 0) {
         // 与 astar 同规则：不允许斜穿墙角。
         if (!passable(current.pos[0] + dx, current.pos[1]) || !passable(current.pos[0], current.pos[1] + dy)) {
           continue
         }
-        stepCost = SQRT2
+        length = SQRT2
       }
-      const tentativeG = gScore.get(current.key) + stepCost
+      const tentativeG = gScore.get(current.key) + stepCostFor(nx, ny, length)
       if (gScore.has(neighborKey) && tentativeG >= gScore.get(neighborKey) - 1e-12) continue
       cameFrom.set(neighborKey, current.pos)
       gScore.set(neighborKey, tentativeG)
-      const h = octile([nx, ny], goal)
+      const h = heuristic([nx, ny])
       openList.push({ key: neighborKey, pos: [nx, ny], f: tentativeG + h, h })
     }
   }
@@ -129,8 +154,17 @@ function round2(value) {
  * @param {number} clearCost - 每清除一处障碍耗电百分比。
  * @returns {Object} 路线规划对象，字段与后端 build_plan 一致。
  */
-export function buildPlan(grid, start, goal, battery, moveCost, clearCost, materialCosts = {}) {
-  const result = planRoute(grid, start, goal)
+export function buildPlan(
+  grid,
+  start,
+  goal,
+  battery,
+  moveCost,
+  clearCost,
+  materialCosts = {},
+  mode = 'distance'
+) {
+  const result = planRoute(grid, start, goal, moveCost, materialCosts, mode)
   const base = {
     goal: [...goal],
     path: [],
@@ -141,6 +175,7 @@ export function buildPlan(grid, start, goal, battery, moveCost, clearCost, mater
     total_cost: 0,
     battery,
     clear_unit_cost: clearCost,
+    mode,
     reachable: false,
     enough: false,
     message: '无法规划路线：目标不可达',
@@ -150,14 +185,22 @@ export function buildPlan(grid, start, goal, battery, moveCost, clearCost, mater
     return base
   }
 
-  const { path, obstacles_on_path: obstacles, cost } = result
+  const { path, obstacles_on_path: obstacles } = result
   // V2.4.0：每格按材质计价（石头 5%、沙子 2%、金刚石 20%）
   const perCell = obstacles.map(([x, y]) => {
     const value = grid[y][x]
     const unit = materialCosts[value]
     return typeof unit === 'number' ? unit : clearCost
   })
-  const moveCostTotal = round2(cost * moveCost)
+  // 几何长度统一按路径逐段计算（energy 模式的 cost 是耗电，不是格数）
+  let geometric = 0
+  for (let index = 1; index < path.length; index += 1) {
+    geometric += Math.hypot(
+      path[index][0] - path[index - 1][0],
+      path[index][1] - path[index - 1][1]
+    )
+  }
+  const moveCostTotal = round2(geometric * moveCost)
   const fullClearCost = round2(perCell.reduce((sum, value) => sum + value, 0))
   const totalCost = round2(moveCostTotal + fullClearCost)
 
@@ -200,6 +243,7 @@ export function buildPlan(grid, start, goal, battery, moveCost, clearCost, mater
     total_cost: totalCost,
     battery,
     clear_unit_cost: clearCost,
+    mode,
     reachable,
     enough,
     message: '',

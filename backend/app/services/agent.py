@@ -492,6 +492,55 @@ def _call_ollama(text: str, timeout: float) -> dict:
     return {"tool": tool, "args": args, "reason": "本地模型解析"}
 
 
+def _call_openai(text: str, timeout: float) -> dict:
+    """
+    调用 OpenAI 兼容的云端接口（V2.5），要求返回 JSON 工具调用。
+
+    Key 只从服务端环境变量读取，绝不下发到前端、也不写日志；超时、HTTP 错误、
+    JSON 不合法都会抛异常，由上层回退到规则解析。
+
+    :param text: 用户指令。
+    :param timeout: 超时秒数。
+    :return: {'tool': str, 'args': dict}。
+    """
+    url = config.settings.agent_llm_base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": config.settings.agent_llm_model,
+        "temperature": 0,
+        "max_tokens": 200,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": _build_system_prompt()},
+            {"role": "user", "content": text},
+        ],
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config.settings.agent_llm_api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - 地址来自配置
+        body = json.loads(response.read().decode("utf-8"))
+    content = body["choices"][0]["message"]["content"]
+    # 兼容模型偶尔加 ```json 代码块的情况
+    content = content.strip()
+    if content.startswith("```"):
+        content = content.strip("`")
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+    parsed = json.loads(content)
+    tool = parsed.get("tool")
+    args = parsed.get("args") or {}
+    if tool in (None, "none"):
+        return {"tool": None, "args": {}, "reason": "云端模型没有给出可用工具"}
+    return {"tool": tool, "args": args, "reason": "云端模型解析"}
+
+
 # ---------------------------------------------------------------------------
 # Agent 服务
 # ---------------------------------------------------------------------------
@@ -516,19 +565,27 @@ class AgentService:
 
     async def _understand(self, text: str) -> tuple[dict, str]:
         """
-        把自然语言解析成工具调用。优先本地大模型（若启用），失败则规则兜底。
+        把自然语言解析成工具调用。
+
+        V2.5：`agent_llm_enabled` 为真时优先大模型——配了 `LLM_API_KEY` 走云端
+        （OpenAI 兼容），否则走本地 Ollama；任何失败都静默回退规则解析。
 
         :param text: 用户指令。
         :return: (调用字典, 来源标记)。
         """
         if config.settings.agent_llm_enabled:
             try:
-                parsed = await asyncio.to_thread(
-                    _call_ollama, text, config.settings.agent_llm_timeout_s
-                )
+                if config.settings.agent_llm_api_key:
+                    parsed = await asyncio.to_thread(
+                        _call_openai, text, config.settings.agent_llm_timeout_s
+                    )
+                else:
+                    parsed = await asyncio.to_thread(
+                        _call_ollama, text, config.settings.agent_llm_timeout_s
+                    )
                 return parsed, "llm"
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as exc:
-                logger.warning("本地模型解析失败（%s），回退到规则解析", exc)
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+                logger.warning("大模型解析失败（%s），回退到规则解析", exc)
                 parsed = parse_rules(text, self._heading())
                 return parsed, "rule-fallback"
         return parse_rules(text, self._heading()), "rule"

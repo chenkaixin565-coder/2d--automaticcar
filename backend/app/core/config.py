@@ -142,6 +142,10 @@ class Settings:
     # 本地 Ollama 服务地址与模型名（仅 agent_llm_enabled=True 时使用）。
     agent_ollama_url: str = os.getenv("AGENT_OLLAMA_URL", "http://127.0.0.1:11434")
     agent_ollama_model: str = os.getenv("AGENT_OLLAMA_MODEL", "qwen2.5:7b")
+    # V2.5：云端大模型（OpenAI 兼容）。配了 Key 就优先走云端，失败/无 Key 自动降级规则。
+    agent_llm_api_key: str = os.getenv("LLM_API_KEY", "")
+    agent_llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    agent_llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     # 大模型调用超时（秒）：超时立即回退到规则解析，绝不阻塞界面。
     agent_llm_timeout_s: float = _env_float("AGENT_LLM_TIMEOUT_S", 6.0)
     # 一句话最多允许下发的巡检点个数，防止模型生成超长任务。

@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.4.1</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -121,7 +121,10 @@
           :show-trail="showTrail"
           :pending-count="pendingCells.length"
           :paint-value="paintValue"
+          :plan-mode="planMode"
           @set-material="paintValue = $event"
+          @toggle-plan-mode="onTogglePlanMode"
+          @go-charge="onGoCharge"
           @toggle-trail="onToggleTrail"
           @new-map="onOpenNewMap"
           @restart="onRestart"
@@ -426,6 +429,8 @@ const offset = ref({ x: 0, y: 0 })
 const editMode = ref('nav')
 // 障碍模式下当前选中的材质（V2.4.0）：1=石头 3=沙子 4=金刚石
 const paintValue = ref(1)
+// 选路模式（V2.5）：energy=最省电（默认）/ distance=最短
+const planMode = ref('energy')
 const mapContainerRef = ref(null)
 
 // 主题
@@ -816,9 +821,22 @@ function onStopPatrol() {
  * @param {number[]} goal - 目标巡检点 [x, y]。
  */
 function onPlanRoute(goal) {
-  service.planRoute(goal)
+  service.planRoute(goal, planMode.value)
   // 手机端：预览浮层要独占视野，先把详情浮窗收起来
   if (window.innerWidth < 768) drawerOpen.value = false
+}
+
+/** 切换"最省电 / 最短"（V2.5）：已有预览时按新模式重算。 */
+function onTogglePlanMode() {
+  planMode.value = planMode.value === 'energy' ? 'distance' : 'energy'
+  if (routePlan.value && routePlan.value.goal) {
+    service.planRoute(routePlan.value.goal, planMode.value)
+  }
+}
+
+/** 主动返航充电（V2.5）。 */
+function onGoCharge() {
+  service.goCharge()
 }
 
 /** 打开预览前保存的视角，关闭预览时还原（V2.1.1）。 */
@@ -991,6 +1009,15 @@ function onCarryHomeConfirm() {
  */
 function onBlockedDecision(action) {
   blockedCell.value = null
+  // V2.5：返航被封死时，用户可以直接选择人工搬回或结束返航。
+  if (action === 'carry') {
+    service.carryHome()
+    return
+  }
+  if (action === 'stop' && patrolStatus.value.running === false) {
+    service.stopPatrol()
+    return
+  }
   service.patrolDecision(action)
 }
 

@@ -1075,7 +1075,7 @@ export class SimulatedService extends RobotService {
    * @param {number[]} goal - 目标点坐标 [x, y]。
    * @returns {Object} 路线规划对象（字段与后端 build_plan 一致）。
    */
-  planRoute(goal) {
+  planRoute(goal, mode = 'energy') {
     const plan = buildPlan(
       this._map.grid,
       [this._state.x, this._state.y],
@@ -1083,7 +1083,8 @@ export class SimulatedService extends RobotService {
       this._state.battery,
       BATTERY_MOVE_COST,
       CLEAR_OBSTACLE_COST,
-      MATERIAL_COSTS
+      MATERIAL_COSTS,
+      mode
     )
     if (plan.path.length === 0) {
       // V2.3.1：不可达时给出"拆哪一格能通"的建议，并保留规划结果供预览卡
@@ -1119,7 +1120,8 @@ export class SimulatedService extends RobotService {
       this._state.battery,
       BATTERY_MOVE_COST,
       CLEAR_OBSTACLE_COST,
-      MATERIAL_COSTS
+      MATERIAL_COSTS,
+      this._plan.mode || 'energy'
     )
   }
 
@@ -1472,6 +1474,47 @@ export class SimulatedService extends RobotService {
     this._emitEvent('notice', {
       message: `正在返回充电点 [${target[0]}, ${target[1]}]，预计 ${this._state.path.length - 1} 步`,
     })
+    this._emitState()
+  }
+
+  /**
+   * 人工搬回起点（V2.5）：空电或返航受阻时使用。
+   */
+  carryHome() {
+    const rescue = this._blocked && this._blocked.reason === 'charge_unreachable'
+    if (this._state.mode !== 'empty' && !rescue) {
+      this._emitEvent('notice', { message: '当前未处于空电或返航受阻状态，无需搬回' })
+      return
+    }
+    this._blocked = null
+    this._paused = false
+    this.reset(false)
+    this._state.battery = 100
+    this._emitEvent('notice', { message: '机器人已搬回初始点，电量已恢复 100%' })
+    this._emitState()
+  }
+
+  /**
+   * 在机器人正前方投放一个障碍（V2.5 动态障碍测试）。
+   *
+   * @param {number} [value] - 材质：1=石头 3=沙子 4=金刚石。
+   */
+  dropObstacleAhead(value = 1) {
+    const dir = this._thetaToDirection(this._state.theta)
+    const x = this._state.x + dir[0]
+    const y = this._state.y + dir[1]
+    if (x <= 0 || y <= 0 || x >= this._map.width - 1 || y >= this._map.height - 1) {
+      this._emitEvent('notice', { message: '正前方是边界，无法投放障碍' })
+      return
+    }
+    if (this._map.grid[y][x] !== 0) {
+      this._emitEvent('notice', { message: `正前方 [${x}, ${y}] 已经有障碍了` })
+      return
+    }
+    this._map.grid[y][x] = [1, 3, 4].includes(value) ? value : 1
+    this._emitEvent('notice', { message: `已在正前方 [${x}, ${y}] 投放障碍，用于验证动态障碍` })
+    this._emitMap?.()
+    this._saveMap?.()
     this._emitState()
   }
 

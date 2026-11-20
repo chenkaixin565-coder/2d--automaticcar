@@ -15,12 +15,17 @@
             </svg>
           </span>
           <h3 id="blocked-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">
-            {{ isUnreachable ? '无法到达巡检点' : '巡检受阻' }}
+            {{ isChargeUnreachable ? '无法返回充电点' : (isUnreachable ? '无法到达巡检点' : '巡检受阻') }}
           </h3>
         </div>
 
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
-          <template v-if="isUnreachable">
+          <template v-if="isChargeUnreachable">
+            返航路线被完全封死，机器人无法自行回到充电点
+            <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span>。
+            请选择人工搬回起点，或结束返航后手动处理。
+          </template>
+          <template v-else-if="isUnreachable">
             到巡检点 <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span> 没有可行路线，
             机器人停在原地等你决定。
           </template>
@@ -30,7 +35,7 @@
           </template>
         </p>
 
-        <ul class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+        <ul v-if="!isChargeUnreachable" class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
           <li v-if="isUnreachable">· 清除：扣 5% 电量拆掉 <span v-if="cell" class="font-mono">[{{ cell[0] }}, {{ cell[1] }}]</span>，重新规划后继续</li>
           <li v-else>· 清除：扣 5% 电量，原地清除后继续巡检</li>
           <li>· 跳过：保留障碍并记入"待清障"，跳过当前巡检点</li>
@@ -42,28 +47,46 @@
         </p>
 
         <div class="mt-4 flex flex-col gap-2">
-          <button
-            type="button"
-            class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            :disabled="battery < clearCost"
-            @click="$emit('decide', 'clear')"
-          >
-            清除{{ isUnreachable ? '该障碍并重新规划' : '此处障碍' }}（-{{ clearCost }}%）并继续
-          </button>
-          <button
-            type="button"
-            class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
-            @click="$emit('decide', 'skip')"
-          >
-            跳过并记入待清障
-          </button>
-          <button
-            type="button"
-            class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
-            @click="$emit('decide', 'stop')"
-          >
-            停止巡检
-          </button>
+          <template v-if="isChargeUnreachable">
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+              @click="$emit('decide', 'carry')"
+            >
+              人工搬回起点（恢复满电）
+            </button>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+              @click="$emit('decide', 'stop')"
+            >
+              结束返航
+            </button>
+          </template>
+          <template v-else>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="battery < clearCost || !cell"
+              @click="$emit('decide', 'clear')"
+            >
+              清除{{ isUnreachable ? '该障碍并重新规划' : '此处障碍' }}（-{{ clearCost }}%）并继续
+            </button>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
+              @click="$emit('decide', 'skip')"
+            >
+              跳过并记入待清障
+            </button>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+              @click="$emit('decide', 'stop')"
+            >
+              停止巡检
+            </button>
+          </template>
         </div>
       </div>
     </div>
@@ -116,6 +139,8 @@ const props = defineProps({
 
 /** 目标完全不可达时换一套文案：不是"前方挡路"，而是"整条路被封死"。 */
 const isUnreachable = computed(() => props.reason === 'unreachable')
+/** V2.5：返航路线被封死，只能人工搬回或结束返航。 */
+const isChargeUnreachable = computed(() => props.reason === 'charge_unreachable')
 
 defineEmits(['decide'])
 </script>

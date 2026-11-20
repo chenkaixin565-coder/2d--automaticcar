@@ -609,6 +609,26 @@ export class RemoteService extends RobotService {
   }
 
   /**
+   * 人工搬回起点（V2.5）：空电或返航受阻时使用。
+   */
+  carryHome() {
+    if (!this._sendCommand('carry_home', {})) {
+      this._rest('POST', '/api/v1/robot/carry-home')
+        .then((payload) => this._syncCommandPayload(payload))
+        .catch((e) => console.error(e))
+    }
+  }
+
+  /**
+   * 在机器人正前方投放一个障碍（V2.5 动态障碍测试）。
+   *
+   * @param {number} [value] - 材质：1=石头 3=沙子 4=金刚石。
+   */
+  dropObstacleAhead(value = 1) {
+    this._sendCommand('drop_obstacle', { value })
+  }
+
+  /**
    * 读取最近一次 state 帧缓存（V2.3.0）。
    * @returns {Object} 机器人状态。
    */

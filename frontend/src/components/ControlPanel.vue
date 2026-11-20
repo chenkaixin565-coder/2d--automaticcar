@@ -10,8 +10,11 @@
       </span>
     </div>
 
-    <!-- 手动控制 -->
-    <div class="grid grid-cols-3 gap-2 w-max mx-auto">
+    <!-- 手动控制（V2.5：空电时禁用，避免"能点但没反应"） -->
+    <div
+      class="grid grid-cols-3 gap-2 w-max mx-auto"
+      :class="robot.mode === 'empty' ? 'opacity-40 pointer-events-none' : ''"
+    >
       <div />
       <button
         type="button"
@@ -127,6 +130,25 @@
       </button>
     </label>
 
+    <!-- 省电路线开关（V2.5：默认按总耗电选路，可切回最短） -->
+    <label class="flex items-center justify-between gap-2 px-1 cursor-pointer select-none">
+      <span class="text-xs text-gray-600 dark:text-gray-300">最省电路线</span>
+      <button
+        type="button"
+        role="switch"
+        :aria-checked="planMode === 'energy' ? 'true' : 'false'"
+        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+        :class="planMode === 'energy' ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-700'"
+        title="开启后选路会把清障成本算进去，可能绕开金刚石"
+        @click="$emit('toggle-plan-mode')"
+      >
+        <span
+          class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+          :class="planMode === 'energy' ? 'translate-x-[1.15rem]' : 'translate-x-[0.15rem]'"
+        />
+      </button>
+    </label>
+
     <!-- 地图操作：重新开始（保留尾迹） / 新建空白地图 -->
     <div class="grid grid-cols-2 gap-2">
       <button
@@ -210,6 +232,14 @@
       <p class="text-xs text-gray-500 dark:text-gray-400">
         机器人被障碍卡住时，自动清除前方障碍并恢复正常控制
       </p>
+      <button
+        type="button"
+        class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
+        title="按当前电量预留，返回充电点"
+        @click="$emit('go-charge')"
+      >
+        返航充电
+      </button>
       <!-- 空电状态：引导用户确认后搬回初始点 -->
       <button
         v-if="robot.mode === 'empty'"
@@ -411,6 +441,11 @@ const props = defineProps({
     type: Number,
     default: 1,
   },
+  // 选路模式（V2.5）：energy=最省电 / distance=最短
+  planMode: {
+    type: String,
+    default: 'energy',
+  },
 })
 
 const emit = defineEmits([
@@ -427,6 +462,8 @@ const emit = defineEmits([
   'stop-patrol',
   'set-edit-mode',
   'set-material',
+  'toggle-plan-mode',
+  'go-charge',
   'clear-goals',
   'remove-goal',
   'toggle-trail',

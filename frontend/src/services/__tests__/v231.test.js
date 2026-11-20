@@ -102,7 +102,8 @@ describe('V2.3.1 交互修复', () => {
   it('有路线预览时一键排障应清掉规划中的障碍', () => {
     const map = service.getMap()
     map.grid[3][3] = 1
-    const plan = service.planRoute([5, 3])
+    // 这里验证的是"按预览清障"，固定用最短模式，保证路线确实穿过该格
+    const plan = service.planRoute([5, 3], 'distance')
     expect(plan.clearable).toEqual([[3, 3]])
     const before = service.getState().battery
     service.resolveFault()

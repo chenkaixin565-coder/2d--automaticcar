@@ -17,6 +17,7 @@ V2.4.0 变更：障碍引入材质（1=石头 5%、3=沙子 2%、4=金刚石 20%
 """
 
 import heapq
+import math
 
 from app.algorithms.astar import SQRT2, octile
 from app.core.constants import CELL_BARRIER, CLEARABLE_CELLS
@@ -29,18 +30,30 @@ def plan_route(
     grid: list[list[int]],
     start: tuple[int, int],
     goal: tuple[int, int],
+    move_cost: float = 0.0,
+    material_costs: dict | None = None,
+    mode: str = "distance",
 ) -> dict:
     """
-    计算起点到目标点的"理论最短路径"（可穿越可清除障碍，边界墙/屏障不可穿越）。
+    计算起点到目标点的可行路径（可穿越可清除障碍，边界墙/屏障不可穿越）。
+
+    V2.5：默认按"总耗电"选路——进入可清障格时，把该材质的清障成本也计入边权，
+    因此会主动绕开 20% 的金刚石，而不是一味走最短。`mode="distance"` 可退回
+    纯几何最短（保留给对照与旧测试）。
 
     :param grid: 二维栅格数组，0=可通行，1/3/4=可清除障碍，2=固定屏障。
     :param start: 起点坐标 (x, y)。
     :param goal: 目标坐标 (x, y)。
-    :return: {'path': [[x, y], ...], 'obstacles_on_path': [[x, y], ...], 'cost': float}，
+    :param move_cost: 每移动一格耗电百分比（斜向按 √2 折算）。
+    :param material_costs: {格子值: 单处清障耗电}。
+    :param mode: "energy" 按总耗电选路；"distance" 按几何最短选路。
+    :return: {'path': [[x, y], ...], 'obstacles_on_path': [...], 'cost': float}，
              路径不可规划时 path 为空列表。
     """
     height = len(grid)
     width = len(grid[0]) if height else 0
+    costs = material_costs or {}
+    energy_mode = mode == "energy" and move_cost > 0
 
     # 边界墙与固定屏障不可穿越；石头/沙子/金刚石视为"可通行但需清除"。
     def passable(x: int, y: int) -> bool:
@@ -51,9 +64,22 @@ def plan_route(
     if not passable(*start) or not passable(*goal):
         return {"path": [], "obstacles_on_path": [], "cost": 0.0}
 
+    def step_cost(nx: int, ny: int, length: float) -> float:
+        """一步的代价：几何距离，或（移动耗电 + 进入格的清障耗电）。"""
+        if not energy_mode:
+            return length
+        extra = costs.get(grid[ny][nx], 0.0) if grid[ny][nx] in CLEARABLE_CELLS else 0.0
+        return move_cost * length + float(extra)
+
+    def heuristic(cell: tuple[int, int]) -> float:
+        """可采纳的启发：每格至少 0.2% 移动耗电。"""
+        if not energy_mode:
+            return octile(cell, goal)
+        return octile(cell, goal) * move_cost
+
     open_heap: list = []
     counter = 0
-    start_h = octile(start, goal)
+    start_h = heuristic(start)
     heapq.heappush(open_heap, (start_h, start_h, counter, start[0], start[1]))
     came_from: dict = {}
     g_score: dict = {start: 0.0}
@@ -81,15 +107,15 @@ def plan_route(
                 # 与 astar 同规则：不允许斜穿墙角（两侧正交格必须都可通行）。
                 if not passable(current[0] + dx, current[1]) or not passable(current[0], current[1] + dy):
                     continue
-                step_cost = SQRT2
+                length = SQRT2
             else:
-                step_cost = 1.0
-            tentative_g = g_score[current] + step_cost
+                length = 1.0
+            tentative_g = g_score[current] + step_cost(neighbor[0], neighbor[1], length)
             if neighbor in g_score and tentative_g >= g_score[neighbor] - 1e-12:
                 continue
             came_from[neighbor] = current
             g_score[neighbor] = tentative_g
-            h = octile(neighbor, goal)
+            h = heuristic(neighbor)
             counter += 1
             heapq.heappush(open_heap, (tentative_g + h, h, counter, neighbor[0], neighbor[1]))
 
@@ -105,13 +131,14 @@ def build_plan(
     move_cost: float,
     clear_cost: float,
     material_costs: dict | None = None,
+    mode: str = "distance",
 ) -> dict:
     """
     规划路线并按电力预算决定可清除的障碍。
 
     预算模型：总耗电 = 路径几何长度 × move_cost + Σ 每格材质的清障耗电。
-    材质成本来自 `shared/simulation-rules.json`，缺省时退回统一的 clear_cost。
-    电量充足时全部纳入；仅够移动时按路径顺序尽量多清；连移动都不够时不可到达。
+    `mode="energy"`（默认）时选路本身也把清障成本计入，因此会绕开昂贵的材质；
+    `mode="distance"` 时只按几何最短选路（对照用）。
 
     :param grid: 二维栅格数组。
     :param start: 起点坐标 (x, y)。
@@ -120,10 +147,11 @@ def build_plan(
     :param move_cost: 每移动一格耗电百分比（斜向按 √2 格折算）。
     :param clear_cost: 未登记材质的兜底清障耗电。
     :param material_costs: {格子值: 单处耗电}，例如 {1: 5.0, 3: 2.0, 4: 20.0}。
+    :param mode: "energy" 最省电 / "distance" 最短距离。
     :return: 路线规划字典（字段与前端 routePlanner.js 逐字段一致）。
     """
     costs = material_costs or {}
-    result = plan_route(grid, start, goal)
+    result = plan_route(grid, start, goal, move_cost, costs, mode)
     base = {
         "goal": list(goal),
         "path": [],
@@ -134,6 +162,7 @@ def build_plan(
         "total_cost": 0.0,
         "battery": battery,
         "clear_unit_cost": clear_cost,
+        "mode": mode,
         "reachable": False,
         "enough": False,
         "message": "无法规划路线：目标不可达",
@@ -147,7 +176,11 @@ def build_plan(
     obstacles = result["obstacles_on_path"]
     # 每格按材质计价
     per_cell = [float(costs.get(grid[y][x], clear_cost)) for x, y in obstacles]
-    move_cost_total = round(result["cost"] * move_cost, 2)
+    # 几何长度统一按路径逐段计算（energy 模式下 plan_route 返回的是耗电，不是格数）
+    geometric = 0.0
+    for (x1, y1), (x2, y2) in zip(path, path[1:]):
+        geometric += math.hypot(x2 - x1, y2 - y1)
+    move_cost_total = round(geometric * move_cost, 2)
     full_clear_cost = round(sum(per_cell), 2)
     total_cost = round(move_cost_total + full_clear_cost, 2)
 
@@ -185,6 +218,7 @@ def build_plan(
         "total_cost": total_cost,
         "battery": battery,
         "clear_unit_cost": clear_cost,
+        "mode": mode,
         "reachable": reachable,
         "enough": enough,
         "message": "",

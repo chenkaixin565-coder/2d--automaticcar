@@ -250,7 +250,7 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
     elif action == "resolve_fault":
         engine.resolve_fault()
     elif action == "plan":
-        engine.plan_route(payload.get("goal") or [1, 1])
+        engine.plan_route(payload.get("goal") or [1, 1], payload.get("mode") or "energy")
     elif action == "cancel_plan":
         engine.cancel_plan()
     elif action == "clear_obstacle":
@@ -267,5 +267,7 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
         engine.set_cell(int(payload.get("x", 0)), int(payload.get("y", 0)), int(payload.get("value", 0)))
     elif action == "new_map":
         engine.new_map(int(payload.get("width", 30)), int(payload.get("height", 20)))
+    elif action == "drop_obstacle":
+        engine.drop_obstacle_ahead(int(payload.get("value", 1)))
     else:
         logger.warning("未知指令: %s", action)

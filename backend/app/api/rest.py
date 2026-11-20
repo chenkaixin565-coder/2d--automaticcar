@@ -263,7 +263,7 @@ def create_rest_router(engine: SimulationEngine) -> APIRouter:
         :param command: {'goal': [x, y]}。
         :return: 路线规划字典（path/obstacles/clearable/电力预算等）。
         """
-        return engine.plan_route(command.goal)
+        return engine.plan_route(command.goal, command.mode)
 
     @router.post("/plan/cancel", summary="取消当前路线规划")
     async def plan_cancel() -> dict:
