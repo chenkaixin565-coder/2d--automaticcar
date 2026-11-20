@@ -199,16 +199,17 @@ def test_patrol_blocked_skip_records_pending():
 
 
 def test_clear_nearest_pending():
-    """一键清最近应清掉距离最近的待清障记录并扣电。"""
+    """一键清理待清障（V2.6.0）：电量够清时一次清完并扣电。"""
     engine = _blocked_engine()
     engine.pending = [[5, 1], [9, 2]]
     engine.map.grid[1][5] = 1
     engine.map.grid[2][9] = 1
     battery_before = engine.battery
-    engine.clear_nearest_pending()
-    assert engine.pending == [[9, 2]]
+    engine.clear_pending_obstacles()
+    assert engine.pending == []
     assert engine.map.grid[1][5] == 0
-    assert engine.battery == pytest.approx(battery_before - 5.0, abs=0.2)
+    assert engine.map.grid[2][9] == 0
+    assert engine.battery == pytest.approx(battery_before - 10.0, abs=0.2)
 
 
 # ---------- 重新开始 / 新建地图 ----------

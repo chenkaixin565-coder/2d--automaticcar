@@ -257,7 +257,9 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
     elif action == "clear_obstacle":
         engine.clear_obstacle_at(payload.get("cell") or [0, 0])
     elif action == "clear_nearest_pending":
-        engine.clear_nearest_pending()
+        engine.clear_pending_obstacles()
+    elif action == "dismiss_blocked":
+        engine.dismiss_blocked()
     elif action == "execute_plan_clear":
         engine.execute_plan_clear()
     elif action == "carry_home":

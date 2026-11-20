@@ -21,9 +21,9 @@
 
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
           <template v-if="isChargeUnreachable">
-            返航路线被完全封死，机器人无法自行回到充电点
+            电量不足，返航路线又被挡住了，机器人无法自行回到充电点
             <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span>。
-            请选择人工搬回起点，或结束返航后手动处理。
+            请用「擦除」清掉挡路障碍（擦除不耗电），清完后会自动继续返航。
           </template>
           <template v-else-if="isUnreachable && !cell">
             到巡检点 <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span> 没有可行路线：
@@ -61,26 +61,31 @@
             <button
               type="button"
               class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
-              @click="$emit('decide', 'carry')"
+              @click="$emit('decide', 'erase')"
             >
-              人工搬回起点（恢复满电）
+              去擦除挡路障碍
             </button>
             <button
               type="button"
               class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
               @click="$emit('decide', 'stop')"
             >
-              结束返航
+              停止返航
             </button>
           </template>
           <template v-else-if="isUnreachable && !cell">
             <button
               type="button"
-              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="!canSkip"
+              :title="canSkip ? '跳过这个巡检点，继续下一个' : '后面没有可达的巡检点了'"
               @click="$emit('decide', 'skip')"
             >
               跳过这个巡检点
             </button>
+            <p v-if="!canSkip" class="text-xs text-amber-600 dark:text-amber-400">
+              后面的巡检点都被挡住，跳过也没用；请先清理或停止巡检。
+            </p>
             <button
               type="button"
               class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
@@ -107,11 +112,16 @@
             </button>
             <button
               type="button"
-              class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="!canSkip"
+              :title="canSkip ? '跳过并把这些障碍记入待清障' : '后面没有可达的巡检点了'"
               @click="$emit('decide', 'skip')"
             >
               跳过并记入待清障
             </button>
+            <p v-if="!canSkip" class="text-xs text-amber-600 dark:text-amber-400">
+              后面的巡检点都被挡住，跳过也到不了；请先清理或停止巡检。
+            </p>
             <button
               type="button"
               class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
@@ -172,6 +182,11 @@ const props = defineProps({
   cellCount: {
     type: Number,
     default: 0,
+  },
+  // 跳过是否还有意义：后面没有可达巡检点时置 false（V2.6.0）
+  canSkip: {
+    type: Boolean,
+    default: true,
   },
 })
 

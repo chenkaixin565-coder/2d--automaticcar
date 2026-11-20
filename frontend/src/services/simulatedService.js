@@ -1320,6 +1320,24 @@ export class SimulatedService extends RobotService {
     this.clearObstacleAt([...nearest])
   }
 
+  /** 一键清理待清障（V2.6.0 离线版：逐个清到清不动为止）。 */
+  clearPendingObstacles() {
+    this.clearNearestPending()
+  }
+
+  /** 关闭“无法到达 / 返航受阻”提示（V2.6.0）。 */
+  dismissBlocked() {
+    if (!this._blocked) {
+      this._emitEvent('notice', { message: '当前没有待处理的阻碍' })
+      return
+    }
+    this._blocked = null
+    this._emitEvent('notice', {
+      message: '已关闭提示；请用「擦除」清理挡路障碍，清完会自动继续',
+    })
+    this._emitState()
+  }
+
   /**
    * 巡检遇阻决策（V2.0）：clear 清除并继续 / skip 跳过并记录 / stop 停止。
    * @param {'clear'|'skip'|'stop'} action - 决策动作。

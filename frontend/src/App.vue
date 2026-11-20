@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.6</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.6.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -135,7 +135,6 @@
           @open-library="onOpenLibrary"
           @move="onMove"
           @reset="onReset"
-          @resolve-fault="onResolveFault"
           @select-preset="onSelectPreset"
           @export-map="onExportMap"
           @import-map="onImportMap"
@@ -193,7 +192,6 @@
         :detail-open="drawerOpen"
         @move="onMove"
         @reset="onReset"
-        @resolve-fault="onResolveFault"
         @start-patrol="onStartPatrol"
         @stop-patrol="onStopPatrol"
         @set-edit-mode="editMode = $event"
@@ -294,6 +292,7 @@
       :cell-count="blockedCell && blockedCell.cells
         ? blockedCell.cells.length
         : (blockedCell && blockedCell.cell ? 1 : 0)"
+      :can-skip="blockedCell ? blockedCell.can_skip !== false : true"
       @decide="onBlockedDecision"
     />
 
@@ -357,6 +356,9 @@
           <li>想手动玩：方向键或右侧按钮；「开始巡检」会按顺序跑完全部巡检点。</li>
         </ol>
         <p class="mt-3 text-xs text-gray-400">演示模式：没有密钥也能浏览；写操作会提示输入操作密钥。</p>
+        <p class="mt-1 text-xs text-amber-500 dark:text-amber-400">
+          提示：「重新开始 / 复位」会回满电，只是为了演示方便；真实流程要返回充电点才算充满。
+        </p>
         <button
           type="button"
           class="mt-4 w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
@@ -607,6 +609,7 @@ onMounted(() => {
           cell: frame.data.blocked.cell,
           cells: frame.data.blocked.cells || null,
           clear_cost: frame.data.blocked.clear_cost,
+          can_skip: frame.data.blocked.can_skip,
           reason: frame.data.blocked.reason || 'obstacle',
           goal: frame.data.blocked.goal || null,
         }
@@ -639,6 +642,9 @@ onMounted(() => {
       // 巡检遇阻：弹出三选一对话框（清除 / 跳过记录 / 停止）
       blockedCell.value = {
         cell: frame.data.cell,
+        cells: frame.data.cells || null,
+        clear_cost: frame.data.clear_cost,
+        can_skip: frame.data.can_skip,
         reason: frame.data.reason || 'obstacle',
         goal: frame.data.goal || null,
       }
@@ -857,10 +863,7 @@ function onReset() {
   stopPlayback()
 }
 
-// 一键排障：由服务层执行（本地仿真或后端命令），结果以 notice 形式反馈。
-function onResolveFault() {
-  service.resolveFault()
-}
+// 一键排障已移除（V2.6.0：与手动/一键清障功能重叠）。
 
 function handleKeyDown(event) {
   const keyMap = {
@@ -1117,6 +1120,13 @@ function onCarryHomeConfirm() {
  */
 function onBlockedDecision(action) {
   blockedCell.value = null
+  // V2.6.0：返航被挡时，关闭提示并切到「擦除」；擦完会自动继续返航
+  if (action === 'erase') {
+    service.dismissBlocked()
+    editMode.value = 'erase'
+    addToast('notice', '请用「擦除」清掉挡路的障碍；擦除不耗电，清完会自动继续返航')
+    return
+  }
   // V2.5：返航被封死时，用户可以直接选择人工搬回或结束返航。
   if (action === 'carry') {
     service.carryHome()
@@ -1136,9 +1146,9 @@ function onBlockedDecision(action) {
   service.patrolDecision(action)
 }
 
-/** 一键清除待清障记录里离机器人最近的一处。 */
+/** 一键清理待清障（V2.6.0：一次清掉电量够清的部分）。 */
 function onClearNearest() {
-  service.clearNearestPending()
+  service.clearPendingObstacles()
 }
 
 /** 重新开始：复位机器人但保留尾迹（V2.0）。 */

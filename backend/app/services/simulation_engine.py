@@ -564,6 +564,12 @@ class SimulationEngine:
             self.blocked = None
             self.paused = False
             self.patrol.paused = False
+        self._resume_charge_if_possible()
+        if self.patrol.running and self.paused and not self.blocked:
+            # 巡检因障碍暂停、用户手动擦掉挡路格后，自动继续（V2.6.0）
+            self.paused = False
+            self.patrol.paused = False
+            self._plan_current_segment()
         self._refresh_plan()
         self._emit_map()
         return self._command_payload()
@@ -649,9 +655,10 @@ class SimulationEngine:
             if self.patrol.running:
                 self._plan_current_segment()
                 self._emit_notice("障碍已清除，继续巡检")
-        elif self.patrol.running and self.paused:
+        else:
             # 清的不是当前挡路的格子：仍尝试重新规划，能绕则恢复。
             self._plan_current_segment()
+        self._resume_charge_if_possible()
         self._refresh_plan()
         self._emit_map()
         return self._command_payload()
@@ -704,25 +711,58 @@ class SimulationEngine:
             self._emit_map()
         return self._command_payload()
 
-    def clear_nearest_pending(self) -> dict:
+    def clear_pending_obstacles(self) -> dict:
         """
-        一键清除"待清障记录"中离机器人最近的一处障碍。
+        一键清理待清障记录：按由近到远，把电量够清的障碍全部清掉（V2.6.0）。
+
+        以前只清最近一格，用户会遇到“清完还是过不去”；现在一次清一批，
+        清完若巡检仍在暂停，会自动重新规划当前巡检点。
 
         :return: 控制类统一响应体（state 数据 + map）。
         """
         if self.mode == MODE_EMPTY:
             self._emit_notice("电量耗尽，无法清障；请将机器人搬回初始点")
             return self._command_payload()
-        # 剔除已不存在的记录（可能已被其它途径清除）。
         self.pending = [
             c for c in self.pending if self.map.in_bounds(*c) and self.map.grid[c[1]][c[0]] in CLEARABLE_CELLS
         ]
         if not self.pending:
             self._emit_notice("没有待清障记录")
             return self._command_payload()
-        nearest = min(self.pending, key=lambda c: abs(c[0] - self.x) + abs(c[1] - self.y))
-        logger.info("一键清最近：选中 %s（共 %d 条记录）", nearest, len(self.pending))
-        return self.clear_obstacle_at(list(nearest))
+        self.pending.sort(key=lambda c: abs(c[0] - self.x) + abs(c[1] - self.y))
+        cleared = 0
+        spent = 0.0
+        for item in list(self.pending):
+            value = self.map.grid[item[1]][item[0]]
+            cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
+            if self.battery + 1e-9 < cost:
+                break
+            self.map.grid[item[1]][item[0]] = 0
+            self.battery = max(0.0, round(self.battery - cost, 2))
+            self.pending.remove(item)
+            cleared += 1
+            spent += cost
+        if cleared == 0:
+            self._emit_notice("电量不足，无法清理任何待清障；请先返航充电")
+            return self._command_payload()
+        logger.info("待清障清理：%d 处，耗电 %.1f%%，剩 %d 处", cleared, spent, len(self.pending))
+        message = f"已清理 {cleared} 处待清障，耗电 {spent:.0f}%"
+        if self.pending:
+            message += f"；电量不足，还剩 {len(self.pending)} 处未清"
+        self._emit_notice(message)
+        self._emit_map()
+        if self.patrol.running and self.paused:
+            self.paused = False
+            self.patrol.paused = False
+            self.blocked = None
+            self._plan_current_segment()
+        self._resume_charge_if_possible()
+        self._refresh_plan()
+        return self._command_payload()
+
+    def clear_nearest_pending(self) -> dict:
+        """兼容旧调用：转向批量清理（V2.6.0）。"""
+        return self.clear_pending_obstacles()
 
     def carry_home(self) -> dict:
         """
@@ -920,6 +960,19 @@ class SimulationEngine:
         )
         return self._command_payload()
 
+    def dismiss_blocked(self) -> dict:
+        """
+        关闭“无法到达/返航受阻”提示，但不改变模式（V2.6.0）。
+
+        用于让用户先去「擦除」手动清障；擦完后 set_cell 会自动恢复返航/巡检。
+        """
+        if not self.blocked:
+            self._emit_notice("当前没有待处理的阻碍")
+            return self._command_payload()
+        self.blocked = None
+        self._emit_notice("已关闭提示；请用「擦除」清理挡路障碍，清完会自动继续")
+        return self._command_payload()
+
     def patrol_decision(self, action: str) -> dict:
         """
         巡检遇阻决策（V2.0）：clear 清除并继续 / skip 跳过并记录 / stop 停止。
@@ -984,20 +1037,40 @@ class SimulationEngine:
                 self.blocked = None
                 self._plan_current_segment()
         elif action == "skip":
-            if cell is not None and cell not in self.pending:
-                if len(self.pending) >= config.settings.pending_limit:
-                    self.pending.pop(0)
-                self.pending.append(cell)
+            # V2.6.0：跳过时把“到当前点整条路线上的障碍”全部记为待清障，
+            # 而不是只记挡路的那一格；否则清完一格仍然去不了下一个点。
+            skip_cells = [list(c) for c in (self.blocked.get("cells") or [])]
+            if not skip_cells:
+                goal_now = self.patrol.current_goal()
+                if goal_now is not None:
+                    route = plan_route(
+                        self.map.grid,
+                        (self.x, self.y),
+                        goal_now,
+                        config.settings.battery_move_cost,
+                        config.settings.material_costs,
+                        "distance",
+                    )
+                    skip_cells = [list(c) for c in route.get("obstacles_on_path", [])]
+            if not skip_cells and cell is not None:
+                skip_cells = [cell]
+            for item in skip_cells:
+                if item not in self.pending:
+                    if len(self.pending) >= config.settings.pending_limit:
+                        self.pending.pop(0)
+                    self.pending.append(item)
             self.blocked = None
             self.paused = False
             self.patrol.paused = False
             self.patrol.advance()
-            if cell is None:
-                logger.info("已跳过不可达巡检点（非单格阻挡）")
-                self._emit_notice("已跳过该巡检点（非单格阻挡，未记入待清障）")
+            if skip_cells:
+                logger.info("已跳过巡检点，%d 处障碍记入待清障", len(skip_cells))
+                self._emit_notice(
+                    f"已跳过该巡检点，{len(skip_cells)} 处障碍已记入待清障，清理后可继续"
+                )
             else:
-                logger.info("已跳过巡检点，障碍 %s 记入待清障（共 %d 条）", cell, len(self.pending))
-                self._emit_notice(f"已跳过该巡检点，障碍 [{cell[0]}, {cell[1]}] 已记入待清障记录")
+                logger.info("已跳过不可达巡检点（没有待清障）")
+                self._emit_notice("已跳过该巡检点（没有可清理的障碍）")
             if self.patrol.current_goal() is None:
                 self.mode = MODE_MANUAL
                 self.path = []
@@ -1007,6 +1080,10 @@ class SimulationEngine:
                 self._plan_current_segment()
         elif action == "stop":
             self.stop_patrol()
+        elif action == "dismiss":
+            # V2.6.0：关闭提示但不改变状态，让用户去「擦除」手动清障
+            self.blocked = None
+            self._emit_notice("已关闭提示；请用「擦除」清理挡路障碍，清完会自动继续")
         else:
             self._emit_notice("未知的决策动作")
         return self._command_payload()
@@ -1014,6 +1091,37 @@ class SimulationEngine:
     def get_patrol_status(self) -> dict:
         """获取巡检状态（REST GET /patrol/status）。"""
         return self.patrol.status_dict()
+
+    def _has_reachable_next_goal(self) -> bool:
+        """跳过当前点后，后面还有没有“不拆障碍也能到”的巡检点（V2.6.0）。"""
+        if not self.patrol.running:
+            return False
+        for goal in self.patrol.goals[self.patrol.current_index + 1 :]:
+            if astar(self.map.grid, (self.x, self.y), goal)["path"]:
+                return True
+        return False
+
+    def _resume_charge_if_possible(self) -> bool:
+        """
+        手动擦除挡路障碍后，如果返航路线恢复，就自动继续返航（V2.6.0）。
+
+        :return: 是否成功恢复返航。
+        """
+        if self.mode != MODE_CHARGING or self.battery <= 0:
+            return False
+        if self.blocked and self.blocked.get("reason") not in (None, "charge_unreachable"):
+            return False
+        result = astar(self.map.grid, (self.x, self.y), tuple(self.map.charge_point))
+        if not result["path"]:
+            return False
+        self.blocked = None
+        self.paused = False
+        self.patrol.paused = False
+        self.path = result["path"]
+        self.speed = 0.0
+        logger.info("返航路线已打通，继续返回充电点")
+        self._emit_notice("返航路线已打通，继续返回充电点")
+        return True
 
     def _plan_current_segment(self) -> None:
         """
@@ -1043,6 +1151,7 @@ class SimulationEngine:
                 "cell": list(suggestion),
                 "reason": "unreachable",
                 "goal": list(goal),
+                "can_skip": self._has_reachable_next_goal(),
             }
             self.path = []
             self.speed = 0.0
@@ -1083,6 +1192,7 @@ class SimulationEngine:
                 "reason": "unreachable",
                 "goal": list(goal),
                 "clear_cost": total,
+                "can_skip": self._has_reachable_next_goal(),
             }
             self.path = []
             self.speed = 0.0
@@ -1099,7 +1209,12 @@ class SimulationEngine:
         self.paused = True
         self.patrol.paused = True
         self.patrol.blocked_by = None
-        self.blocked = {"cell": None, "reason": "unreachable", "goal": list(goal)}
+        self.blocked = {
+            "cell": None,
+            "reason": "unreachable",
+            "goal": list(goal),
+            "can_skip": self._has_reachable_next_goal(),
+        }
         self.path = []
         self.speed = 0.0
         logger.info("巡检点 %s 被固定屏障/边界/斜角隔断，已暂停等待用户决策", goal)
@@ -1330,16 +1445,57 @@ class SimulationEngine:
                         },
                     }
                 )
-            elif not self._charge_unreachable_notified:
-                self._charge_unreachable_notified = True
-                self._emit_anomaly(
-                    {
-                        "time": datetime.now(timezone.utc).isoformat(),
-                        "type": ANOMALY_LOW_BATTERY,
-                        "message": "电量过低且充电点不可达，电量将持续耗尽",
-                        "position": [self.x, self.y],
-                    }
+            else:
+                # V2.6.0：返航被挡时不再直接摆烂，而是暂停并要求人工擦除挡路障碍；
+                # 擦除不耗电，清完会自动继续返航（见 _resume_charge_if_possible）。
+                route = plan_route(
+                    self.map.grid,
+                    (self.x, self.y),
+                    charge,
+                    config.settings.battery_move_cost,
+                    config.settings.material_costs,
+                    "distance",
                 )
+                cells = [list(c) for c in route.get("obstacles_on_path", [])]
+                total = 0.0
+                for cx, cy in cells:
+                    total += config.settings.material_costs.get(
+                        self.map.grid[cy][cx], config.settings.clear_obstacle_cost
+                    )
+                total = round(total, 2)
+                self.mode = MODE_CHARGING
+                self.path = []
+                self.paused = True
+                self.patrol.paused = True
+                self.patrol.blocked_by = None
+                self.speed = 0.0
+                self.blocked = {
+                    "cell": cells[0] if cells else None,
+                    "cells": cells,
+                    "reason": "charge_unreachable",
+                    "goal": list(charge),
+                    "clear_cost": total,
+                    "can_skip": False,
+                }
+                if cells:
+                    message = (
+                        f"电量不足，返航路线被 {len(cells)} 处障碍挡住；"
+                        "请用「擦除」清除挡路障碍，清完会自动继续返航"
+                    )
+                else:
+                    message = "电量不足，返航路线被固定屏障/边界封死；请用「擦除」拆掉挡路屏障"
+                logger.warning("低电量返航受阻：%s", message)
+                self._emit_blocked(message)
+                if not self._charge_unreachable_notified:
+                    self._charge_unreachable_notified = True
+                    self._emit_anomaly(
+                        {
+                            "time": datetime.now(timezone.utc).isoformat(),
+                            "type": ANOMALY_LOW_BATTERY,
+                            "message": "电量过低且充电点不可达，电量将持续耗尽",
+                            "position": [self.x, self.y],
+                        }
+                    )
 
         # 步骤 6：电量耗尽：停止一切动作，等待用户确认搬回或充电。
         if self.battery <= 0.0 and self.mode != MODE_EMPTY:

@@ -499,14 +499,15 @@ export class RemoteService extends RobotService {
   }
 
   /**
-   * 一键清除最近的待清障障碍（V2.0）。
+   * 一键清理待清障（V2.6.0：后端一次清掉电量够清的部分）。
    */
-  clearNearestPending() {
-    if (!this._sendCommand('clear_nearest_pending', {})) {
-      this._rest('POST', '/api/v1/robot/clear-nearest-pending')
-        .then((payload) => this._syncCommandPayload(payload))
-        .catch((e) => console.error(e))
-    }
+  clearPendingObstacles() {
+    this.clearNearestPending()
+  }
+
+  /** 关闭“无法到达 / 返航受阻”提示，保持状态不变（V2.6.0）。 */
+  dismissBlocked() {
+    this._sendCommand('dismiss_blocked', {})
   }
 
   /**

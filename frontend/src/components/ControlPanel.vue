@@ -192,6 +192,7 @@
       type="button"
       class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
       :disabled="!pendingCount"
+      title="按由近到远，一次清掉电量够清的待清障"
       @click="$emit('clear-nearest')"
     >
       清理待清障{{ pendingCount ? `（${pendingCount} 处）` : '（无）' }}
@@ -234,22 +235,8 @@
       </div>
     </div>
 
-    <!-- 一键排障 -->
+    <!-- 返航 / 动态障碍测试（V2.6.0：移除“解除卡住”，与手动/一键清障重叠） -->
     <div class="space-y-2">
-      <button
-        type="button"
-        class="w-full px-3 py-2 text-sm font-medium rounded-lg border transition-colors flex items-center justify-center gap-2"
-        :class="robot.mode === 'blocked'
-          ? 'border-red-500 bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50'
-          : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'"
-        @click="$emit('resolve-fault')"
-      >
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
-        解除卡住
-      </button>
-      <p class="text-xs text-gray-500 dark:text-gray-400">
-        机器人被障碍卡住 / 巡检受阻时，清除挡路的那一格并恢复
-      </p>
       <button
         type="button"
         class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
@@ -482,7 +469,6 @@ const props = defineProps({
 const emit = defineEmits([
   'move',
   'reset',
-  'resolve-fault',
   'select-preset',
   'export-map',
   'import-map',
