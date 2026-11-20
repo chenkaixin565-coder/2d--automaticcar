@@ -36,8 +36,8 @@
       </div>
     </div>
 
-    <!-- 三向距离 -->
-    <div class="grid grid-cols-3 gap-2">
+    <!-- 三向距离（V2.5.2：可在控制面板关闭，答辩时只留关键指标） -->
+    <div v-if="showSensors" class="grid grid-cols-3 gap-2">
       <div
         v-for="name in sensorNames"
         :key="name.key"
@@ -104,6 +104,11 @@ const props = defineProps({
   showTemperature: {
     type: Boolean,
     default: false,
+  },
+  // 是否显示三向距离（V2.5.2：演示模式可关闭）
+  showSensors: {
+    type: Boolean,
+    default: true,
   },
 })
 

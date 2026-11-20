@@ -1322,15 +1322,25 @@ export class SimulatedService extends RobotService {
       this._emitEvent('notice', { message: '当前没有待决策的巡检阻碍' })
       return
     }
-    const cell = [...this._blocked.cell]
-    if (action === 'clear' && this._map.grid[cell[1]][cell[0]] === 2) {
-      this._emitEvent('notice', { message: '前方是固定屏障，机器人无法清除；请选择跳过或停止' })
+    // V2.5.2：目标被封死时 cell 可能是 null，不能直接展开
+    const rawCell = this._blocked && this._blocked.cell
+    const cell = rawCell ? [...rawCell] : null
+    if (action === 'clear') {
+      if (!cell) {
+        this._emitEvent('notice', {
+          message: '当前阻挡不是单格障碍，无法清除；请选择跳过或停止',
+        })
+        return
+      }
+      if (this._map.grid[cell[1]][cell[0]] === 2) {
+        this._emitEvent('notice', { message: '前方是固定屏障，机器人无法清除；请选择跳过或停止' })
+        return
+      }
+      this.clearObstacleAt(cell)
       return
     }
-    if (action === 'clear') {
-      this.clearObstacleAt(cell)
-    } else if (action === 'skip') {
-      if (!this._pending.some((c) => c[0] === cell[0] && c[1] === cell[1])) {
+    if (action === 'skip') {
+      if (cell && !this._pending.some((c) => c[0] === cell[0] && c[1] === cell[1])) {
         if (this._pending.length >= PENDING_LIMIT) {
           this._pending.shift()
         }
@@ -1342,7 +1352,9 @@ export class SimulatedService extends RobotService {
       this._patrol.blockedBy = null
       this._patrol.currentGoalIndex += 1
       this._emitEvent('notice', {
-        message: `已跳过该巡检点，障碍 [${cell[0]}, ${cell[1]}] 已记入待清障记录`,
+        message: cell
+          ? `已跳过该巡检点，障碍 [${cell[0]}, ${cell[1]}] 已记入待清障记录`
+          : '已跳过该巡检点（非单格阻挡，未记入待清障）',
       })
       if (this._patrol.currentGoalIndex >= this._patrol.totalGoals) {
         this._finishPatrol()
@@ -1350,11 +1362,13 @@ export class SimulatedService extends RobotService {
         this._planToCurrentGoal()
       }
       this._emitState()
-    } else if (action === 'stop') {
-      this.stopPatrol()
-    } else {
-      this._emitEvent('notice', { message: '未知的决策动作' })
+      return
     }
+    if (action === 'stop') {
+      this.stopPatrol()
+      return
+    }
+    this._emitEvent('notice', { message: '未知的决策动作' })
   }
 
   /**

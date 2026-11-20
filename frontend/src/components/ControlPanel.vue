@@ -149,6 +149,24 @@
       </button>
     </label>
 
+    <!-- 传感器数值开关（V2.5.2：演示时只留关键指标） -->
+    <label class="flex items-center justify-between gap-2 px-1 cursor-pointer select-none">
+      <span class="text-xs text-gray-600 dark:text-gray-300">传感器数值</span>
+      <button
+        type="button"
+        role="switch"
+        :aria-checked="showSensors ? 'true' : 'false'"
+        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+        :class="showSensors ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-700'"
+        @click="$emit('toggle-sensors')"
+      >
+        <span
+          class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+          :class="showSensors ? 'translate-x-[1.15rem]' : 'translate-x-[0.15rem]'"
+        />
+      </button>
+    </label>
+
     <!-- 地图操作：重新开始（保留尾迹） / 新建空白地图 -->
     <div class="grid grid-cols-2 gap-2">
       <button
@@ -454,6 +472,11 @@ const props = defineProps({
     type: String,
     default: 'energy',
   },
+  // 是否显示三向传感器数值（V2.5.2）
+  showSensors: {
+    type: Boolean,
+    default: true,
+  },
 })
 
 const emit = defineEmits([
@@ -473,6 +496,7 @@ const emit = defineEmits([
   'toggle-plan-mode',
   'go-charge',
   'drop-obstacle',
+  'toggle-sensors',
   'clear-goals',
   'remove-goal',
   'toggle-trail',

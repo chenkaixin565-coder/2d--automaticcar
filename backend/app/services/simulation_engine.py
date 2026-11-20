@@ -929,7 +929,13 @@ class SimulationEngine:
             self._emit_notice("当前没有待决策的巡检阻碍")
             return self._command_payload()
 
-        cell = list(self.blocked["cell"])
+        # V2.5.2：目标被完全封死时 blocked["cell"] 是 None，不能直接 list()，
+        # 否则这里会抛 TypeError，前端所有按钮都"没反应"。
+        raw_cell = self.blocked.get("cell")
+        cell = list(raw_cell) if raw_cell else None
+        if action == "clear" and cell is None:
+            self._emit_notice("当前阻挡不是单格障碍，无法清除；请选择跳过或停止")
+            return self._command_payload()
         if action == "clear" and self.map.in_bounds(*cell) and self.map.grid[cell[1]][cell[0]] == CELL_BARRIER:
             self._emit_notice("前方是固定屏障，机器人无法清除；请选择跳过或停止")
             return self._command_payload()
@@ -941,7 +947,7 @@ class SimulationEngine:
                 self.blocked = None
                 self._plan_current_segment()
         elif action == "skip":
-            if cell not in self.pending:
+            if cell is not None and cell not in self.pending:
                 if len(self.pending) >= config.settings.pending_limit:
                     self.pending.pop(0)
                 self.pending.append(cell)
@@ -949,8 +955,12 @@ class SimulationEngine:
             self.paused = False
             self.patrol.paused = False
             self.patrol.advance()
-            logger.info("已跳过巡检点，障碍 %s 记入待清障（共 %d 条）", cell, len(self.pending))
-            self._emit_notice(f"已跳过该巡检点，障碍 [{cell[0]}, {cell[1]}] 已记入待清障记录")
+            if cell is None:
+                logger.info("已跳过不可达巡检点（非单格阻挡）")
+                self._emit_notice("已跳过该巡检点（非单格阻挡，未记入待清障）")
+            else:
+                logger.info("已跳过巡检点，障碍 %s 记入待清障（共 %d 条）", cell, len(self.pending))
+                self._emit_notice(f"已跳过该巡检点，障碍 [{cell[0]}, {cell[1]}] 已记入待清障记录")
             if self.patrol.current_goal() is None:
                 self.mode = MODE_MANUAL
                 self.path = []

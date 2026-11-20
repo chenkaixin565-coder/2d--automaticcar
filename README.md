@@ -2,7 +2,7 @@
 
 **在线演示：[https://irm-sim-2d.onrender.com](https://irm-sim-2d.onrender.com)** ｜ **静态版（无后端，纯浏览器仿真）：[https://chenkaixin565-coder.github.io/2d--automaticcar/](https://chenkaixin565-coder.github.io/2d--automaticcar/)**
 
-当前版本 V2.5.1 ｜ 源码：[chenkaixin565-coder/2d--automaticcar](https://github.com/chenkaixin565-coder/2d--automaticcar)
+当前版本 V2.5.2 ｜ 源码：[chenkaixin565-coder/2d--automaticcar](https://github.com/chenkaixin565-coder/2d--automaticcar)
 
 浏览器里开一张二维栅格地图，一台虚拟机器人在地图上走。你可以用方向键遥控它，也可以打一句话让它自己规划路线。地图就是个二维数组，用 Canvas 画出来；后端负责仿真、寻路、传感器读数和异常检测，前端只负责画和收指令。后端顺手把打包好的前端静态文件也托管了，所以整个项目一个容器就能跑完。
 
@@ -21,11 +21,11 @@
 结课提交只需要可拉取的镜像地址。镜像由 GitHub Actions 自动构建（见 `.github/workflows/docker-publish.yml`），内含前端构建产物、后端与共享规则，单容器即可运行。
 
 ```bash
-docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.1
-docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.1
+docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.2
+docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.2
 ```
 
-打开 http://localhost:8000 即可。也可以把 `V2.5.1` 换成 `latest`。
+打开 http://localhost:8000 即可。也可以把 `V2.5.2` 换成 `latest`。
 
 ## 跑起来
 
@@ -316,7 +316,7 @@ CI 在 `.github/workflows/ci.yml`，push 或 PR 到 `main` 时跑：后端 ruff 
 
 留着给自己记的，也省得别人踩同样的坑。
 
-异常检测在样本很少的时候基本靠猜。IsolationForest 要足够的点才有意义，机器人刚起步那几十帧里，规则基线反而更准，这个阈值我一直没调明白。Agent 的规则解析只认中文，英文输入会走到兜底话术上。地图设计器在手机上能用，但用手指画格子精度很差，勉强能改一两格，正经画图还是得用电脑。限流和指标是进程内存的，前面说了，多实例就废了。还有一点：引擎状态全在内存里，刷新浏览器不会丢，重启后端就全回初始状态，没有做存档。V2.5 的云端 LLM 已用 DeepSeek 实测三条链路，但只验证了一家兼容接口；动态障碍已经加到控制面板（投放障碍（测试））。
+异常检测在样本很少的时候基本靠猜。IsolationForest 要足够的点才有意义，机器人刚起步那几十帧里，规则基线反而更准，这个阈值我一直没调明白。Agent 的规则解析只认中文，英文输入会走到兜底话术上。地图设计器在手机上能用，但用手指画格子精度很差，勉强能改一两格，正经画图还是得用电脑。限流和指标是进程内存的，前面说了，多实例就废了。还有一点：引擎状态全在内存里，刷新浏览器不会丢，重启后端就全回初始状态，没有做存档。V2.5 的云端 LLM 已用 DeepSeek 实测三条链路，但只验证了一家兼容接口；动态障碍已经加到控制面板（投放障碍（测试））；V2.5.2 补了首次访客引导和传感器数值开关。
 
 ## 关于这份代码
 

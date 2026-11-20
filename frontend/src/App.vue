@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.1</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.2</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -122,8 +122,10 @@
           :pending-count="pendingCells.length"
           :paint-value="paintValue"
           :plan-mode="planMode"
+          :show-sensors="showSensors"
           @set-material="paintValue = $event"
           @toggle-plan-mode="onTogglePlanMode"
+          @toggle-sensors="onToggleSensors"
           @go-charge="onGoCharge"
           @drop-obstacle="onDropObstacle"
           @toggle-trail="onToggleTrail"
@@ -167,6 +169,7 @@
           :robot="robot"
           :temperature-history="temperatureHistory"
           :show-temperature="showTemperature"
+          :show-sensors="showSensors"
           @toggle-temperature="toggleTemperature"
         />
         <PlaybackBar
@@ -227,6 +230,7 @@
             :robot="robot"
             :temperature-history="temperatureHistory"
             :show-temperature="showTemperature"
+            :show-sensors="showSensors"
             @toggle-temperature="toggleTemperature"
           />
           <PlaybackBar
@@ -303,6 +307,27 @@
       @confirm="onCarryHomeConfirm"
       @dismiss="showEmptyModal = false"
     />
+
+    <!-- 首次访客引导（V2.5.2）：30 秒上手，只弹一次 -->
+    <div v-if="showGuide" class="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-black/50" @click="dismissGuide" />
+      <div class="relative w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-5 shadow-2xl">
+        <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">30 秒上手</h3>
+        <ol class="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300 list-decimal list-inside">
+          <li>在地图上点蓝色巡检点，或在右侧「路线规划」里选目标。</li>
+          <li>点「预览规划路线」看路线和耗电，再点「前往该点」只巡这一个。</li>
+          <li>想手动玩：方向键或右侧按钮；「开始巡检」会按顺序跑完全部巡检点。</li>
+        </ol>
+        <p class="mt-3 text-xs text-gray-400">演示模式：没有密钥也能浏览；写操作会提示输入操作密钥。</p>
+        <button
+          type="button"
+          class="mt-4 w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+          @click="dismissGuide"
+        >
+          知道了，开始体验
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -432,6 +457,11 @@ const editMode = ref('nav')
 const paintValue = ref(1)
 // 选路模式（V2.5）：energy=最省电（默认）/ distance=最短
 const planMode = ref('energy')
+// 是否显示三向传感器数值（V2.5.2）
+const showSensors = ref(true)
+// 首次访客引导（V2.5.2）
+const GUIDE_KEY = 'irm_guide_seen_v1'
+const showGuide = ref(false)
 const mapContainerRef = ref(null)
 
 // 主题
@@ -514,6 +544,12 @@ onMounted(() => {
   loadGoalNumbers()
   loadTrailSetting()
   fitMap()
+  // 首次访客：显示 30 秒上手引导（V2.5.2）
+  try {
+    if (!localStorage.getItem(GUIDE_KEY)) showGuide.value = true
+  } catch {
+    // 隐私模式下 localStorage 可能不可用，忽略
+  }
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('resize', handleResize)
   window.addEventListener('orientationchange', handleResize)
@@ -843,6 +879,21 @@ function onGoCharge() {
 /** 测试用：在机器人正前方投放一格障碍（V2.5 动态障碍）。 */
 function onDropObstacle() {
   service.dropObstacleAhead()
+}
+
+/** 显示/隐藏三向传感器数值（V2.5.2）。 */
+function onToggleSensors() {
+  showSensors.value = !showSensors.value
+}
+
+/** 关闭首次访客引导（V2.5.2），之后不再自动弹出。 */
+function dismissGuide() {
+  showGuide.value = false
+  try {
+    localStorage.setItem(GUIDE_KEY, '1')
+  } catch {
+    // 忽略存储失败
+  }
 }
 
 /** 打开预览前保存的视角，关闭预览时还原（V2.1.1）。 */
