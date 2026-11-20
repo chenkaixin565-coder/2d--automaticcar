@@ -80,12 +80,16 @@
           </button>
           <button
             type="button"
-            class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-            :disabled="!plan.reachable"
+            class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="!plan.reachable || plan.detour_available === false"
+            :title="plan.detour_available === false ? '没有完全绕开障碍的路线，请先清障' : '不拆障碍，绕路前往'"
             @click="$emit('start', { mode: 'detour' })"
           >
             绕过障碍直接前往
           </button>
+          <p v-if="plan.detour_available === false" class="text-xs text-gray-400 dark:text-gray-500">
+            没有完全绕开障碍的路线，只能先清除或取消。
+          </p>
         </div>
         <button
           v-else

@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.7.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.7.1</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -298,6 +298,7 @@
       :return-cost="blockedCell && blockedCell.return_cost ? blockedCell.return_cost : 0"
       :can-clear-and-return="blockedCell ? blockedCell.can_clear_and_return === true : false"
       :can-return-after-erase="blockedCell ? blockedCell.can_return_after_erase !== false : true"
+      :manual-only="blockedCell ? blockedCell.manual_only === true : false"
       @decide="onBlockedDecision"
     />
 
@@ -310,7 +311,7 @@
           <button type="button" class="text-gray-400 hover:text-gray-600" @click="showSchedule = false">✕</button>
         </div>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          到点自动按下面的顺序巡检，跑完最后一轮会返回充电点；轮数会被“够不够回充电点”限制。
+          到点自动按下面的顺序巡检，跑完最后一轮会返回充电点；轮数会被“够不够回充电点”限制。时间按北京时间。
         </p>
         <div class="mt-3 grid grid-cols-2 gap-3">
           <label class="text-xs text-gray-600 dark:text-gray-300">
@@ -322,6 +323,10 @@
             <input v-model.number="scheduleRounds" type="number" min="1" max="20" class="mt-1 w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
           </label>
         </div>
+        <label class="mt-3 flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+          <input v-model="scheduleAutoClear" type="checkbox" class="accent-primary-600">
+          遇到障碍自动清除（预留返航电量）
+        </label>
         <div class="mt-3">
           <div class="text-xs text-gray-600 dark:text-gray-300 mb-1">巡检顺序</div>
           <div v-if="scheduleGoals.length === 0" class="text-xs text-gray-400">地图上还没有巡检点</div>
@@ -358,6 +363,7 @@
               <span>
                 <span class="font-mono">{{ item.time }}</span>
                 · {{ item.rounds }}/{{ item.max_rounds }} 轮 · {{ item.goals.length }} 个点
+                · {{ item.auto_clear === false ? '不自动清障' : '自动清障' }}
               </span>
               <button type="button" class="text-red-500 hover:text-red-600" @click="onRemoveSchedule(item.id)">删除</button>
             </div>
@@ -579,6 +585,7 @@ const showSchedule = ref(false)
 const scheduleTime = ref('09:00')
 const scheduleRounds = ref(1)
 const scheduleGoals = ref([])
+const scheduleAutoClear = ref(true)
 const mapContainerRef = ref(null)
 
 // 主题
@@ -688,6 +695,7 @@ onMounted(() => {
           return_cost: frame.data.blocked.return_cost,
           can_clear_and_return: frame.data.blocked.can_clear_and_return,
           can_return_after_erase: frame.data.blocked.can_return_after_erase,
+          manual_only: frame.data.blocked.manual_only,
           reason: frame.data.blocked.reason || 'obstacle',
           goal: frame.data.blocked.goal || null,
         }
@@ -726,6 +734,7 @@ onMounted(() => {
         return_cost: frame.data.return_cost,
         can_clear_and_return: frame.data.can_clear_and_return,
         can_return_after_erase: frame.data.can_return_after_erase,
+        manual_only: frame.data.manual_only,
         reason: frame.data.reason || 'obstacle',
         goal: frame.data.goal || null,
       }
@@ -1033,7 +1042,12 @@ function onMoveScheduleGoal(index, delta) {
 
 /** 添加定时巡检。 */
 function onAddSchedule() {
-  service.addSchedule(scheduleTime.value, scheduleGoals.value, scheduleRounds.value)
+  service.addSchedule(
+    scheduleTime.value,
+    scheduleGoals.value,
+    scheduleRounds.value,
+    scheduleAutoClear.value
+  )
 }
 
 /** 删除定时巡检。 */
@@ -1153,6 +1167,10 @@ function onPlanStart(payload) {
   const plan = routePlan.value
   if (!plan || !plan.goal) return
   const mode = (payload && payload.mode) || 'direct'
+  if (mode === 'detour' && plan.detour_available === false) {
+    addToast('notice', '没有完全绕开障碍的路线，请先清障或取消')
+    return
+  }
   const goal = [plan.goal[0], plan.goal[1]]
   keepViewOnPlanEnd = true
   if (mode === 'clear' && plan.clearable.length > 0) {

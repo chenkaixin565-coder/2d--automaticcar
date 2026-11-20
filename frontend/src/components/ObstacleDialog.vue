@@ -122,6 +122,25 @@
               停止巡检
             </button>
           </template>
+          <template v-else-if="manualOnly">
+            <p class="text-xs text-red-600 dark:text-red-400">
+              电量不足以自动清除，需要你用「擦除」手动清掉这 {{ cellCount }} 处障碍（擦除不耗电）。
+            </p>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+              @click="$emit('decide', 'edit-barriers')"
+            >
+              去擦除挡路障碍
+            </button>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+              @click="$emit('decide', 'stop')"
+            >
+              停止巡检
+            </button>
+          </template>
           <template v-else>
             <button
               type="button"
@@ -131,6 +150,9 @@
             >
               清除{{ isUnreachable ? `这 ${cellCount} 处障碍并重新规划` : '此处障碍' }}（-{{ clearCost }}%）并继续
             </button>
+            <p v-if="battery < clearCost" class="text-xs text-amber-600 dark:text-amber-400">
+              电量不足，无法自动清除；请用「擦除」手动清障（不耗电）。
+            </p>
             <button
               type="button"
               class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -221,6 +243,11 @@ const props = defineProps({
   canReturnAfterErase: {
     type: Boolean,
     default: true,
+  },
+  // 只能手动擦除（电量不足以自动清障，V2.7.1）
+  manualOnly: {
+    type: Boolean,
+    default: false,
   },
 })
 

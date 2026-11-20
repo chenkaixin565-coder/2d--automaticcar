@@ -204,7 +204,7 @@
         <button
           type="button"
           class="flex-1 px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="patrolStatus.running"
+          :disabled="robot.mode === 'empty'"
           @click="$emit('start-patrol')"
         >
           开始巡检

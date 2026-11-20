@@ -55,3 +55,24 @@ def test_schedule_rejects_bad_time():
     engine = blank_engine()
     engine.add_schedule("25:99", [[9, 6]], 1)
     assert engine.schedules == []
+
+
+def test_schedule_auto_clear_flag():
+    engine = blank_engine()
+    engine.add_schedule("09:30", [[9, 6]], 1, False)
+    assert engine.schedules[0]["auto_clear"] is False
+
+
+def test_plan_clear_marks_manual_remaining():
+    """按规划清障时电量不够：剩下的格子要进待清障，并弹“手动擦除”提示。"""
+    engine = blank_engine()
+    for x in (4, 6):
+        for y in range(1, 7):
+            engine.map.grid[y][x] = 4  # 两列金刚石，规划会清 2 处
+    engine.plan_route([9, 6])
+    engine.battery = 10.0
+    engine.execute_plan_clear()
+    assert engine.blocked is not None
+    assert engine.blocked.get("manual_only") is True
+    assert len(engine.pending) >= 2
+

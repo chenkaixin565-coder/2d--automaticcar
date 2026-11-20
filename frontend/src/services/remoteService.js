@@ -515,9 +515,14 @@ export class RemoteService extends RobotService {
     this._sendCommand('clear_and_charge', {})
   }
 
-  /** 添加定时巡检（V2.7.0）。 */
-  addSchedule(time, goals, rounds) {
-    this._sendCommand('add_schedule', { time, goals, rounds })
+  /** 添加定时巡检（V2.7.0；V2.7.1 支持自动清障）。 */
+  addSchedule(time, goals, rounds, autoClear = true) {
+    this._sendCommand('add_schedule', {
+      time,
+      goals,
+      rounds,
+      auto_clear: Boolean(autoClear),
+    })
   }
 
   /** 删除定时巡检（V2.7.0）。 */
