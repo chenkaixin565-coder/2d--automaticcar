@@ -130,8 +130,8 @@ app = FastAPI(
     title="智能巡检机器人二维仿真系统",
     description="基于 FastAPI 的二维栅格机器人仿真后端：A* 八邻域寻路、虚拟传感器、"
     "规则 + IsolationForest 双策略异常检测、一键路线规划、自然语言 Agent 指令层"
-    "（V2.5.2）",
-    version="V2.5.2",
+    "（V2.5.3）",
+    version="V2.5.3",
     lifespan=lifespan,
 )
 
@@ -243,7 +243,7 @@ async def health() -> dict:
     age = None if last is None else round(time.time() - last, 1)
     return {
         "status": "ok",
-        "version": "V2.5.2",
+        "version": "V2.5.3",
         "tick_errors": _TICK_STATE["tick_errors"],
         "last_tick_age_s": age,
         "tick_alive": age is not None and age < max(5.0, settings.tick_interval_ms / 1000 * 10),
@@ -251,8 +251,13 @@ async def health() -> dict:
         "rate_limit_per_minute": settings.rate_limit_per_minute,
         "ws_clients": len(manager.active_connections),
         # V2.3.0：把"AI 到底以什么形态在跑"暴露出来，便于线上核对。
+        # V2.5.3：有云端 Key 时显示 llm，否则显示 ollama / rule。
         "anomaly_strategy": type(engine.anomaly_detector).__name__,
-        "agent_mode": "ollama" if settings.agent_llm_enabled else "rule",
+        "agent_mode": (
+            ("llm" if settings.agent_llm_api_key else "ollama")
+            if settings.agent_llm_enabled
+            else "rule"
+        ),
     }
 
 

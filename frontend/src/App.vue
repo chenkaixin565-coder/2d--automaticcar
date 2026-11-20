@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.2</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.3</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -1069,6 +1069,13 @@ function onBlockedDecision(action) {
   // V2.5：返航被封死时，用户可以直接选择人工搬回或结束返航。
   if (action === 'carry') {
     service.carryHome()
+    return
+  }
+  // V2.5.3：目标被屏障围死时，停止巡检并切到擦除模式，让用户自己拆屏障。
+  if (action === 'edit-barriers') {
+    service.stopPatrol()
+    editMode.value = 'erase'
+    addToast('notice', '已停止巡检并切到「擦除」模式：点掉围住巡检点的固定屏障，再重新规划')
     return
   }
   if (action === 'stop' && patrolStatus.value.running === false) {

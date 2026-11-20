@@ -25,6 +25,11 @@
             <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span>。
             请选择人工搬回起点，或结束返航后手动处理。
           </template>
+          <template v-else-if="isUnreachable && !cell">
+            到巡检点 <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span> 没有可行路线：
+            它被<strong>固定屏障或地图边界</strong>完全围住了，清掉普通障碍也打不通。
+            请跳过这个点，或到「擦除」模式清掉屏障。
+          </template>
           <template v-else-if="isUnreachable">
             到巡检点 <span v-if="goal" class="font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span> 没有可行路线，
             机器人停在原地等你决定。
@@ -35,11 +40,16 @@
           </template>
         </p>
 
-        <ul v-if="!isChargeUnreachable" class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+        <ul v-if="!isChargeUnreachable && !(isUnreachable && !cell)" class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
           <li v-if="isUnreachable">· 清除：扣 5% 电量拆掉 <span v-if="cell" class="font-mono">[{{ cell[0] }}, {{ cell[1] }}]</span>，重新规划后继续</li>
           <li v-else>· 清除：扣 5% 电量，原地清除后继续巡检</li>
           <li>· 跳过：保留障碍并记入"待清障"，跳过当前巡检点</li>
           <li>· 停止：结束本次巡检，回到手动模式</li>
+        </ul>
+
+        <ul v-if="isUnreachable && !cell" class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+          <li>· 跳过：放弃这个巡检点，继续下一个</li>
+          <li>· 擦除：停止巡检并切到「擦除」模式，手动拆掉屏障</li>
         </ul>
 
         <p class="mt-2 text-xs" :class="battery < clearCost ? 'text-red-500' : 'text-gray-400 dark:text-gray-500'">
@@ -61,6 +71,29 @@
               @click="$emit('decide', 'stop')"
             >
               结束返航
+            </button>
+          </template>
+          <template v-else-if="isUnreachable && !cell">
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+              @click="$emit('decide', 'skip')"
+            >
+              跳过这个巡检点
+            </button>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200"
+              @click="$emit('decide', 'edit-barriers')"
+            >
+              停止巡检并去擦除屏障
+            </button>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-xs font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+              @click="$emit('decide', 'stop')"
+            >
+              停止巡检
             </button>
           </template>
           <template v-else>
