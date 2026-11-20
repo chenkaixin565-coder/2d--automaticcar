@@ -64,12 +64,34 @@ def plan_route(
     if not passable(*start) or not passable(*goal):
         return {"path": [], "obstacles_on_path": [], "cost": 0.0}
 
-    def step_cost(nx: int, ny: int, length: float) -> float:
-        """一步的代价：几何距离，或（移动耗电 + 进入格的清障耗电）。"""
+    def step_cost(cx: int, cy: int, nx: int, ny: int, length: float) -> float:
+        """
+        一步的代价：几何距离，或（移动耗电 + 需要清除的格子耗电）。
+
+        V2.5.5：斜走时除了目标格，两侧正交格如果也是可清障碍，必须一起清，
+        否则执行时仍然不能斜穿（与 astar 的“禁止斜穿墙角”口径一致）。
+        """
         if not energy_mode:
             return length
-        extra = costs.get(grid[ny][nx], 0.0) if grid[ny][nx] in CLEARABLE_CELLS else 0.0
-        return move_cost * length + float(extra)
+        extra = 0.0
+        if grid[ny][nx] in CLEARABLE_CELLS:
+            extra += float(costs.get(grid[ny][nx], 0.0))
+        if cx != nx and cy != ny:
+            for ox, oy in ((nx, cy), (cx, ny)):
+                if grid[oy][ox] in CLEARABLE_CELLS:
+                    extra += float(costs.get(grid[oy][ox], 0.0))
+        return move_cost * length + extra
+
+    def edge_clear_cells(ax: int, ay: int, bx: int, by: int) -> list[list[int]]:
+        """一段路径需要清除的格子：目标格 + 斜走时的两侧正交格。"""
+        cells: list[list[int]] = []
+        if grid[by][bx] in CLEARABLE_CELLS:
+            cells.append([bx, by])
+        if ax != bx and ay != by:
+            for ox, oy in ((bx, ay), (ax, by)):
+                if grid[oy][ox] in CLEARABLE_CELLS and [ox, oy] not in cells:
+                    cells.append([ox, oy])
+        return cells
 
     def heuristic(cell: tuple[int, int]) -> float:
         """可采纳的启发：每格至少 0.2% 移动耗电。"""
@@ -97,7 +119,13 @@ def plan_route(
                 current = came_from[current]
                 path.append(list(current))
             path.reverse()
-            obstacles = [cell for cell in path if grid[cell[1]][cell[0]] in CLEARABLE_CELLS]
+            # V2.5.5：把“为了斜穿而必须清掉的两侧正交格”也算进待清障，
+            # 否则会出现“规划只清一处、执行却因为斜角被挡住”的不一致。
+            obstacles: list[list[int]] = []
+            for (ax, ay), (bx, by) in zip(path, path[1:]):
+                for cell in edge_clear_cells(ax, ay, bx, by):
+                    if cell not in obstacles:
+                        obstacles.append(cell)
             return {"path": path, "obstacles_on_path": obstacles, "cost": round(g_score[goal], 4)}
         for dx, dy in _NEIGHBORS:
             neighbor = (current[0] + dx, current[1] + dy)
@@ -110,7 +138,9 @@ def plan_route(
                 length = SQRT2
             else:
                 length = 1.0
-            tentative_g = g_score[current] + step_cost(neighbor[0], neighbor[1], length)
+            tentative_g = g_score[current] + step_cost(
+                current[0], current[1], neighbor[0], neighbor[1], length
+            )
             if neighbor in g_score and tentative_g >= g_score[neighbor] - 1e-12:
                 continue
             came_from[neighbor] = current

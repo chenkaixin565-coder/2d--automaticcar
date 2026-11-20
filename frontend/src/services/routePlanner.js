@@ -73,12 +73,31 @@ export function planRoute(
     return { path: [], obstacles_on_path: [], cost: 0 }
   }
 
-  /** 一步代价：几何距离，或移动耗电 + 进入格的清障耗电。 */
-  const stepCostFor = (nx, ny, length) => {
+  /** 一步代价：几何距离，或移动耗电 + 需要清除的格子耗电（V2.5.5 含斜角两侧）。 */
+  const stepCostFor = (cx, cy, nx, ny, length) => {
     if (!energyMode) return length
-    const value = grid[ny][nx]
-    const extra = [1, 3, 4].includes(value) ? materialCosts[value] || 0 : 0
+    let extra = 0
+    if ([1, 3, 4].includes(grid[ny][nx])) extra += materialCosts[grid[ny][nx]] || 0
+    if (cx !== nx && cy !== ny) {
+      for (const [ox, oy] of [[nx, cy], [cx, ny]]) {
+        if ([1, 3, 4].includes(grid[oy][ox])) extra += materialCosts[grid[oy][ox]] || 0
+      }
+    }
     return moveCost * length + extra
+  }
+
+  /** 一段路径需要清除的格子：目标格 + 斜走时的两侧正交格。 */
+  const edgeClearCells = (ax, ay, bx, by) => {
+    const cells = []
+    if ([1, 3, 4].includes(grid[by][bx])) cells.push([bx, by])
+    if (ax !== bx && ay !== by) {
+      for (const [ox, oy] of [[bx, ay], [ax, by]]) {
+        if ([1, 3, 4].includes(grid[oy][ox])) {
+          if (!cells.some(([cx, cy]) => cx === ox && cy === oy)) cells.push([ox, oy])
+        }
+      }
+    }
+    return cells
   }
   /** 可采纳启发：至少每格的移动耗电。 */
   const heuristic = (cell) => (energyMode ? octile(cell, goal) * moveCost : octile(cell, goal))
@@ -104,8 +123,16 @@ export function planRoute(
         path.unshift(previous)
         cursor = key(previous[0], previous[1])
       }
-      // V2.4.0：石头(1) / 沙子(3) / 金刚石(4) 都算"待清障"
-      const obstacles = path.filter(([x, y]) => [1, 3, 4].includes(grid[y][x]))
+      // V2.5.5：把“为了斜穿而必须清掉的两侧正交格”也算进待清障，
+      // 保证规划清障数与执行时的斜角规则一致。
+      const obstacles = []
+      for (let i = 1; i < path.length; i += 1) {
+        for (const cell of edgeClearCells(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1])) {
+          if (!obstacles.some(([cx, cy]) => cx === cell[0] && cy === cell[1])) {
+            obstacles.push(cell)
+          }
+        }
+      }
       return { path, obstacles_on_path: obstacles, cost: gScore.get(current.key) }
     }
     closedSet.add(current.key)
@@ -124,7 +151,9 @@ export function planRoute(
         }
         length = SQRT2
       }
-      const tentativeG = gScore.get(current.key) + stepCostFor(nx, ny, length)
+      const tentativeG =
+        gScore.get(current.key) +
+        stepCostFor(current.pos[0], current.pos[1], nx, ny, length)
       if (gScore.has(neighborKey) && tentativeG >= gScore.get(neighborKey) - 1e-12) continue
       cameFrom.set(neighborKey, current.pos)
       gScore.set(neighborKey, tentativeG)
