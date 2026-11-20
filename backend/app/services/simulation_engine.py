@@ -1443,68 +1443,45 @@ class SimulationEngine:
 
     def _plan_current_segment(self) -> None:
         """
-        为当前巡检点规划路径。
+        为当前巡检点规划路径（V2.7.3）。
 
-        V2.3.1：目标不可达时不再静默跳过，而是先找一处"拆掉它就能通"的障碍，
-        暂停巡检并把选择权交给用户（清除后重试 / 跳过 / 停止）；只有连单格
-        拆除都救不了时，才退回原来的"报警并跳过"。
+        关键点：执行阶段和“路线预览”必须用同一个算法（能量加权 A*），
+        否则预览绕开了贵障碍、执行却走另一条最短路过不去。
         """
         goal = self.patrol.current_goal()
         if goal is None:
             self.path = []
             return
-        result = astar(self.map.grid, (self.x, self.y), goal)
-        if result["path"]:
-            self.path = smooth_and_expand(self.map.grid, result["path"])
-            self.patrol.path_remain = max(0, len(self.path) - 1)
-            self.patrol.blocked_by = None
-            return
 
-        suggestion = find_min_obstacle_to_remove(self.map.grid, (self.x, self.y), goal)
-        if suggestion is not None:
-            self.paused = True
-            self.patrol.paused = True
-            self.patrol.blocked_by = list(suggestion)
-            self.blocked = {
-                "cell": list(suggestion),
-                "reason": "unreachable",
-                "goal": list(goal),
-                "can_skip": self._has_reachable_next_goal(),
-            }
-            # V2.7.2：立刻把建议清除的格子记入待清障，地图上才有标记
-            if list(suggestion) not in self.pending:
-                self.pending.append(list(suggestion))
-            self.path = []
-            self.speed = 0.0
-            logger.info(
-                "巡检点 %s 不可达，建议清除 %s 后重试", goal, suggestion
-            )
-            self._emit_blocked(
-                f"无法到达巡检点 [{goal[0]}, {goal[1]}]：建议清除 "
-                f"[{suggestion[0]}, {suggestion[1]}] 打通路线"
-            )
-            self._after_patrol_blocked()
-            return
-
-        # V2.5.4：单格拆除救不了时，再按“穿障路线”找出一整批需要清的障碍。
-        # 例如目标四周被 4 块石头围住：拆一格仍不通，但四格全清就能到。
-        route = plan_route(
+        planned = plan_route(
             self.map.grid,
             (self.x, self.y),
             goal,
             config.settings.battery_move_cost,
             config.settings.material_costs,
-            "distance",
+            "energy",
         )
-        cells = [list(c) for c in route.get("obstacles_on_path", [])]
-        if cells and route.get("path"):
+        path = planned.get("path") or []
+        cells = [list(c) for c in planned.get("obstacles_on_path", [])]
+
+        if path and not cells:
+            # 与预览完全一致的路径，直接执行
+            self.path = [list(p) for p in path]
+            self.patrol.path_remain = max(0, len(self.path) - 1)
+            self.patrol.blocked_by = None
+            return
+
+        if path and cells:
             total = 0.0
             for cx, cy in cells:
-                value = self.map.grid[cy][cx]
                 total += config.settings.material_costs.get(
-                    value, config.settings.clear_obstacle_cost
+                    self.map.grid[cy][cx], config.settings.clear_obstacle_cost
                 )
             total = round(total, 2)
+            back = astar(self.map.grid, (self.x, self.y), tuple(self.map.charge_point))
+            back_steps = max(0, len(back["path"]) - 1) if back["path"] else 0
+            reserve = back_steps * config.settings.battery_move_cost + 2.0
+            can_auto = self.battery >= total + reserve
             self.paused = True
             self.patrol.paused = True
             self.patrol.blocked_by = cells[0]
@@ -1515,6 +1492,7 @@ class SimulationEngine:
                 "goal": list(goal),
                 "clear_cost": total,
                 "can_skip": self._has_reachable_next_goal(),
+                "manual_only": not can_auto,
             }
             for item in cells:
                 if item not in self.pending:
@@ -1522,16 +1500,28 @@ class SimulationEngine:
             self.path = []
             self.speed = 0.0
             logger.info(
-                "巡检点 %s 需要清除 %d 处障碍（合计 %.1f%%）才能到达", goal, len(cells), total
+                "巡检点 %s 的省电路线需要清除 %d 处障碍（合计 %.1f%%，电量 %.1f%%）",
+                goal,
+                len(cells),
+                total,
+                self.battery,
             )
-            self._emit_blocked(
-                f"无法到达巡检点 [{goal[0]}, {goal[1]}]：需要先清除 {len(cells)} 处障碍"
-                f"（合计 {total:.0f}%），是否全部清除？"
-            )
+            if can_auto:
+                message = (
+                    f"无法到达巡检点 [{goal[0]}, {goal[1]}]：省电路线需要先清除 "
+                    f"{len(cells)} 处障碍（合计 {total:.0f}%），是否清除后继续？"
+                )
+            else:
+                message = (
+                    f"无法到达巡检点 [{goal[0]}, {goal[1]}]：省电路线需要清除 "
+                    f"{len(cells)} 处障碍（合计 {total:.0f}%），但电量不够同时返航；"
+                    "请用「擦除」手动清障"
+                )
+            self._emit_blocked(message)
             self._after_patrol_blocked()
             return
 
-        # 连“全部可清障碍”都打不通：说明被固定屏障/边界隔断，只能跳过或人工处理。
+        # 连“穿过可清障碍”都没有路线：固定屏障/边界/斜角隔断
         self.paused = True
         self.patrol.paused = True
         self.patrol.blocked_by = None

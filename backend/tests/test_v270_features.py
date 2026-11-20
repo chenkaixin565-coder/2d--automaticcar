@@ -74,6 +74,18 @@ def test_schedule_pre_clear_removes_route_obstacles():
     assert any(engine.map.grid[y][4] == 0 for y in range(1, 7))
 
 
+def test_patrol_follows_preview_energy_path():
+    """执行必须复用预览的省电路线，不能偷偷改走另一条最短路径。"""
+    engine = blank_engine()
+    for y in range(1, 4):
+        for x in range(2, 5):
+            engine.map.grid[y][x] = 4  # 一堆金刚石，省电路线会绕开
+    plan = engine.plan_route([9, 6], "energy")
+    engine.start_patrol([[9, 6]])
+    assert engine.blocked is None
+    assert engine.path == plan["path"]
+
+
 def test_plan_clear_marks_manual_remaining():
     """按规划清障时电量不够：剩下的格子要进待清障，并弹“手动擦除”提示。"""
     engine = blank_engine()

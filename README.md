@@ -2,7 +2,7 @@
 
 **在线演示：[https://irm-sim-2d.onrender.com](https://irm-sim-2d.onrender.com)** ｜ **静态版（无后端，纯浏览器仿真）：[https://chenkaixin565-coder.github.io/2d--automaticcar/](https://chenkaixin565-coder.github.io/2d--automaticcar/)**
 
-当前版本 V2.7.2 ｜ 源码：[chenkaixin565-coder/2d--automaticcar](https://github.com/chenkaixin565-coder/2d--automaticcar)
+当前版本 V2.7.3 ｜ 源码：[chenkaixin565-coder/2d--automaticcar](https://github.com/chenkaixin565-coder/2d--automaticcar)
 
 浏览器里开一张二维栅格地图，一台虚拟机器人在地图上走。你可以用方向键遥控它，也可以打一句话让它自己规划路线。地图就是个二维数组，用 Canvas 画出来；后端负责仿真、寻路、传感器读数和异常检测，前端只负责画和收指令。后端顺手把打包好的前端静态文件也托管了，所以整个项目一个容器就能跑完。
 
@@ -21,11 +21,11 @@
 结课提交只需要可拉取的镜像地址。镜像由 GitHub Actions 自动构建（见 `.github/workflows/docker-publish.yml`），内含前端构建产物、后端与共享规则，单容器即可运行。
 
 ```bash
-docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.7.2
-docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.7.2
+docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.7.3
+docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.7.3
 ```
 
-打开 http://localhost:8000 即可。也可以把 `V2.7.2` 换成 `latest`。
+打开 http://localhost:8000 即可。也可以把 `V2.7.3` 换成 `latest`。
 
 ## 跑起来
 
@@ -93,7 +93,9 @@ cd frontend && npm install && npm run dev
 
 按块说，因为逐条列二十多个版本号没人看得下去。
 
-### V2.5.0：按耗电选路、电量兜底、LLM 接入
+### V2.7：定时巡检、返航预算、预览与执行统一
+
+这一段主要是把“电量”和“清障”串起来。低电量返航被挡时，会先算清楚待清几处、清障和返航各要多少电、清完够不够回去；够就一键清障返航，不够就只能用「擦除」手动清。定时巡检可以在创建时选定「提前清好」或「巡检中自动清」，并按清障 + 移动 + 返航估算轮数上限，到点后跑完最后一轮自动回充电点。最后把预览和执行统一到同一个省电 A*：预览显示哪条路，点“前往该点”就走哪条，不会偷偷换成最短路径。待清障也会在不可达时立刻标记到地图上（橙色编号块）。
 
 V2.4.1 之后收了一轮反馈，主要是三件事：规划还是走最短、哪怕要穿 20% 的金刚石；没电了按钮还能点；清障失败却提示"已排障"。这版把材质清障成本并进 A* 的边权，默认**最省电**，面板上能切回最短；手动排障按材质扣电，电量不足就明确失败，不再假成功。巡检第一段到不了时不再说"已出发"，而是直接暂停弹窗；返航路线被封死时可以选择人工搬回起点。另外加了云端 LLM：配 `LLM_API_KEY` 走 OpenAI 兼容接口，超时、报错、没 Key 都自动退回规则解析。动态障碍可以用 WS 命令 `drop_obstacle` 投放，供演示"行驶中突然掉障碍"。
 

@@ -94,8 +94,9 @@
         <button
           v-else
           type="button"
-          class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
-          :disabled="!plan.reachable"
+          class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="!plan.reachable || !plan.enough"
+          :title="plan.enough ? '按预览路线前往' : '电量不足以清除路线上的障碍，请先充电'"
           @click="$emit('start', { mode: 'direct' })"
         >
           前往该点（只巡这一个点）
