@@ -40,6 +40,19 @@
           </template>
         </p>
 
+        <div v-if="isChargeUnreachable" class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+          <div>当前电量：<strong>{{ battery.toFixed(1) }}%</strong></div>
+          <div>待清障碍：<strong>{{ cellCount }} 处</strong>，清除需 <strong>{{ clearCost }}%</strong></div>
+          <div>返航移动需：<strong>{{ returnCost }}%</strong></div>
+          <div>
+            清完预计剩：<strong>{{ (battery - clearCost).toFixed(1) }}%</strong>
+            （够不够返航：{{ canReturnAfterErase ? '够' : '不够' }}）
+          </div>
+          <div v-if="!canReturnAfterErase" class="text-red-600 dark:text-red-400">
+            即使手动擦除，剩余电量也不够走回充电点，请先处理电量。
+          </div>
+        </div>
+
         <ul v-if="!isChargeUnreachable && !(isUnreachable && !cell)" class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
           <li v-if="isUnreachable">· 清除：扣 {{ clearCost }}% 电量拆掉 {{ cellCount || 1 }} 处障碍，重新规划后继续</li>
           <li v-else>· 清除：扣 {{ clearCost }}% 电量，原地清除后继续巡检</li>
@@ -59,11 +72,19 @@
         <div class="mt-4 flex flex-col gap-2">
           <template v-if="isChargeUnreachable">
             <button
+              v-if="canClearAndReturn"
+              type="button"
+              class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-orange-600 text-white hover:bg-orange-700"
+              @click="$emit('decide', 'clear-charge')"
+            >
+              清除 {{ cellCount }} 处障碍并返航（-{{ clearCost }}%）
+            </button>
+            <button
               type="button"
               class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
               @click="$emit('decide', 'erase')"
             >
-              去擦除挡路障碍
+              去擦除挡路障碍（不耗电）
             </button>
             <button
               type="button"
@@ -185,6 +206,19 @@ const props = defineProps({
   },
   // 跳过是否还有意义：后面没有可达巡检点时置 false（V2.6.0）
   canSkip: {
+    type: Boolean,
+    default: true,
+  },
+  // 返航受阻时的电量预算（V2.7.0）
+  returnCost: {
+    type: Number,
+    default: 0,
+  },
+  canClearAndReturn: {
+    type: Boolean,
+    default: false,
+  },
+  canReturnAfterErase: {
     type: Boolean,
     default: true,
   },

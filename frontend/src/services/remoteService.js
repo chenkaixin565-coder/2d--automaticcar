@@ -510,6 +510,21 @@ export class RemoteService extends RobotService {
     this._sendCommand('dismiss_blocked', {})
   }
 
+  /** 低电量返航受阻时，清除挡路障碍并继续返航（V2.7.0）。 */
+  clearAndCharge() {
+    this._sendCommand('clear_and_charge', {})
+  }
+
+  /** 添加定时巡检（V2.7.0）。 */
+  addSchedule(time, goals, rounds) {
+    this._sendCommand('add_schedule', { time, goals, rounds })
+  }
+
+  /** 删除定时巡检（V2.7.0）。 */
+  removeSchedule(id) {
+    this._sendCommand('remove_schedule', { id })
+  }
+
   /**
    * 获取待清障记录（V2.0，REST 拉取）。
    * @returns {Promise<number[][]>} 坐标数组。

@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.6.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.7.0</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -143,6 +143,7 @@
           @avatar-error="onAvatarError"
           @start-patrol="onStartPatrol"
           @stop-patrol="onStopPatrol"
+          @open-schedule="onOpenSchedule"
           @set-edit-mode="editMode = $event"
           @clear-goals="onClearGoals"
           @remove-goal="onRemoveGoal"
@@ -194,6 +195,7 @@
         @reset="onReset"
         @start-patrol="onStartPatrol"
         @stop-patrol="onStopPatrol"
+        @open-schedule="onOpenSchedule"
         @set-edit-mode="editMode = $event"
         @set-material="paintValue = $event"
         @fit-map="fitMap"
@@ -293,8 +295,76 @@
         ? blockedCell.cells.length
         : (blockedCell && blockedCell.cell ? 1 : 0)"
       :can-skip="blockedCell ? blockedCell.can_skip !== false : true"
+      :return-cost="blockedCell && blockedCell.return_cost ? blockedCell.return_cost : 0"
+      :can-clear-and-return="blockedCell ? blockedCell.can_clear_and_return === true : false"
+      :can-return-after-erase="blockedCell ? blockedCell.can_return_after_erase !== false : true"
       @decide="onBlockedDecision"
     />
+
+    <!-- 定时巡检（V2.7.0）：时间 + 顺序 + 轮数 -->
+    <div v-if="showSchedule" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-black/40" @click="showSchedule = false" />
+      <div class="relative w-full max-w-xl rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-5 shadow-2xl">
+        <div class="flex items-center justify-between">
+          <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">定时巡检</h3>
+          <button type="button" class="text-gray-400 hover:text-gray-600" @click="showSchedule = false">✕</button>
+        </div>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          到点自动按下面的顺序巡检，跑完最后一轮会返回充电点；轮数会被“够不够回充电点”限制。
+        </p>
+        <div class="mt-3 grid grid-cols-2 gap-3">
+          <label class="text-xs text-gray-600 dark:text-gray-300">
+            开始时间
+            <input v-model="scheduleTime" type="time" class="mt-1 w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
+          </label>
+          <label class="text-xs text-gray-600 dark:text-gray-300">
+            巡检轮数
+            <input v-model.number="scheduleRounds" type="number" min="1" max="20" class="mt-1 w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
+          </label>
+        </div>
+        <div class="mt-3">
+          <div class="text-xs text-gray-600 dark:text-gray-300 mb-1">巡检顺序</div>
+          <div v-if="scheduleGoals.length === 0" class="text-xs text-gray-400">地图上还没有巡检点</div>
+          <div v-else class="space-y-1 max-h-48 overflow-y-auto">
+            <div
+              v-for="(goal, index) in scheduleGoals"
+              :key="`${goal[0]}-${goal[1]}`"
+              class="flex items-center gap-2 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-xs"
+            >
+              <span class="w-5 text-gray-400">{{ index + 1 }}.</span>
+              <span class="flex-1 font-mono">[{{ goal[0] }}, {{ goal[1] }}]</span>
+              <button type="button" class="px-1 text-gray-500 disabled:opacity-30" :disabled="index === 0" @click="onMoveScheduleGoal(index, -1)">↑</button>
+              <button type="button" class="px-1 text-gray-500 disabled:opacity-30" :disabled="index === scheduleGoals.length - 1" @click="onMoveScheduleGoal(index, 1)">↓</button>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="mt-3 w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+          :disabled="scheduleGoals.length === 0"
+          @click="onAddSchedule"
+        >
+          添加定时任务
+        </button>
+        <div class="mt-4 border-t border-gray-100 dark:border-gray-800 pt-3">
+          <div class="text-xs text-gray-600 dark:text-gray-300 mb-1">已添加</div>
+          <div v-if="!robot.schedules || robot.schedules.length === 0" class="text-xs text-gray-400">还没有定时任务</div>
+          <div v-else class="space-y-1">
+            <div
+              v-for="item in robot.schedules"
+              :key="item.id"
+              class="flex items-center justify-between px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-xs"
+            >
+              <span>
+                <span class="font-mono">{{ item.time }}</span>
+                · {{ item.rounds }}/{{ item.max_rounds }} 轮 · {{ item.goals.length }} 个点
+              </span>
+              <button type="button" class="text-red-500 hover:text-red-600" @click="onRemoveSchedule(item.id)">删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 新建地图弹窗（V2.0） -->
     <NewMapModal
@@ -504,6 +574,11 @@ const GUIDE_KEY = 'irm_guide_seen_v1'
 const showGuide = ref(false)
 // 低电量自动返航的大提示（V2.5.6）
 const autoChargeAlert = ref(null)
+// 定时巡检（V2.7.0）
+const showSchedule = ref(false)
+const scheduleTime = ref('09:00')
+const scheduleRounds = ref(1)
+const scheduleGoals = ref([])
 const mapContainerRef = ref(null)
 
 // 主题
@@ -610,6 +685,9 @@ onMounted(() => {
           cells: frame.data.blocked.cells || null,
           clear_cost: frame.data.blocked.clear_cost,
           can_skip: frame.data.blocked.can_skip,
+          return_cost: frame.data.blocked.return_cost,
+          can_clear_and_return: frame.data.blocked.can_clear_and_return,
+          can_return_after_erase: frame.data.blocked.can_return_after_erase,
           reason: frame.data.blocked.reason || 'obstacle',
           goal: frame.data.blocked.goal || null,
         }
@@ -645,6 +723,9 @@ onMounted(() => {
         cells: frame.data.cells || null,
         clear_cost: frame.data.clear_cost,
         can_skip: frame.data.can_skip,
+        return_cost: frame.data.return_cost,
+        can_clear_and_return: frame.data.can_clear_and_return,
+        can_return_after_erase: frame.data.can_return_after_erase,
         reason: frame.data.reason || 'obstacle',
         goal: frame.data.goal || null,
       }
@@ -935,6 +1016,31 @@ function onDropObstacle() {
   service.dropObstacleAhead()
 }
 
+/** 打开定时巡检面板（V2.7.0）。 */
+function onOpenSchedule() {
+  scheduleGoals.value = (map.goals || []).map((g) => [...g])
+  showSchedule.value = true
+}
+
+/** 调整定时巡检的巡检顺序。 */
+function onMoveScheduleGoal(index, delta) {
+  const target = index + delta
+  if (target < 0 || target >= scheduleGoals.value.length) return
+  const list = [...scheduleGoals.value]
+  ;[list[index], list[target]] = [list[target], list[index]]
+  scheduleGoals.value = list
+}
+
+/** 添加定时巡检。 */
+function onAddSchedule() {
+  service.addSchedule(scheduleTime.value, scheduleGoals.value, scheduleRounds.value)
+}
+
+/** 删除定时巡检。 */
+function onRemoveSchedule(id) {
+  service.removeSchedule(id)
+}
+
 /** 显示/隐藏三向传感器数值（V2.5.2）。 */
 function onToggleSensors() {
   showSensors.value = !showSensors.value
@@ -1120,6 +1226,11 @@ function onCarryHomeConfirm() {
  */
 function onBlockedDecision(action) {
   blockedCell.value = null
+  // V2.7.0：预留了返航电量时，可以清除挡路障碍后继续返航
+  if (action === 'clear-charge') {
+    service.clearAndCharge()
+    return
+  }
   // V2.6.0：返航被挡时，关闭提示并切到「擦除」；擦完会自动继续返航
   if (action === 'erase') {
     service.dismissBlocked()

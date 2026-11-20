@@ -218,6 +218,14 @@
           停止巡检
         </button>
       </div>
+      <button
+        type="button"
+        class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+        title="设置到点自动巡检、顺序和轮数（V2.7.0）"
+        @click="$emit('open-schedule')"
+      >
+        定时巡检
+      </button>
       <div v-if="patrolStatus.running" class="space-y-1">
         <div class="flex justify-between text-xs text-gray-600 dark:text-gray-300">
           <span>进度 {{ patrolStatus.completed || 0 }}/{{ patrolStatus.total || 0 }}</span>
@@ -477,6 +485,7 @@ const emit = defineEmits([
   'avatar-error',
   'start-patrol',
   'stop-patrol',
+  'open-schedule',
   'set-edit-mode',
   'set-material',
   'toggle-plan-mode',

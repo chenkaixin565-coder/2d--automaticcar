@@ -1338,6 +1338,19 @@ export class SimulatedService extends RobotService {
     this._emitState()
   }
 
+  /** 离线模式：定时巡检需要后端调度（V2.7.0）。 */
+  addSchedule() {
+    this._emitEvent('notice', { message: '离线模式不支持定时巡检，请连接后端后使用' })
+  }
+
+  removeSchedule() {
+    this._emitEvent('notice', { message: '离线模式不支持定时巡检，请连接后端后使用' })
+  }
+
+  clearAndCharge() {
+    this._emitEvent('notice', { message: '离线模式不支持自动清障返航，请手动擦除' })
+  }
+
   /**
    * 巡检遇阻决策（V2.0）：clear 清除并继续 / skip 跳过并记录 / stop 停止。
    * @param {'clear'|'skip'|'stop'} action - 决策动作。

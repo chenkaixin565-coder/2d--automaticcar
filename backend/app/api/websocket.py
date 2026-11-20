@@ -260,6 +260,16 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
         engine.clear_pending_obstacles()
     elif action == "dismiss_blocked":
         engine.dismiss_blocked()
+    elif action == "clear_and_charge":
+        engine.clear_and_charge()
+    elif action == "add_schedule":
+        engine.add_schedule(
+            payload.get("time") or "09:00",
+            payload.get("goals") or [],
+            int(payload.get("rounds", 1)),
+        )
+    elif action == "remove_schedule":
+        engine.remove_schedule(int(payload.get("id", 0)))
     elif action == "execute_plan_clear":
         engine.execute_plan_clear()
     elif action == "carry_home":

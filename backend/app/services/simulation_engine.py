@@ -144,6 +144,10 @@ class SimulationEngine:
         self.paused: bool = False
         self.blocked: dict | None = None
         self.pending: list[list[int]] = []
+        # 定时巡检（V2.7.0）：{id, time, goals, rounds, max_rounds, last_run}
+        self.schedules: list[dict] = []
+        self._schedule_seq: int = 0
+        self._scheduled_return: bool = False
 
         # 传感器最新读数缓存。
         self.sensors: dict = {
@@ -873,14 +877,15 @@ class SimulationEngine:
 
     # ---------- 巡检 ----------
 
-    def start_patrol(self, goals: list[list[int]] | None = None) -> dict:
+    def start_patrol(self, goals: list[list[int]] | None = None, ordered: bool = False) -> dict:
         """
         启动自动巡检（REST POST /patrol/start）。
 
-        goals 缺省时使用地图巡检点；先最近邻贪心排序，再逐段 A*。
-        若已有规划预览且目标一致，直接沿用预览路径（V2.0：规划=预览，巡检=执行）。
+        goals 缺省时使用地图巡检点；ordered=False 时先最近邻贪心排序，
+        ordered=True 时严格按传入顺序（定时巡检用）。
 
         :param goals: 巡检点列表（可选）。
+        :param ordered: 是否保留传入顺序。
         :return: 与契约一致的巡检状态字典。
         """
         if self.mode == MODE_EMPTY:
@@ -891,8 +896,8 @@ class SimulationEngine:
             self._emit_notice("没有可用的巡检点，请先在地图上设置巡检点")
             return self.patrol.status_dict()
 
-        ordered = order_goals_by_nearest((self.x, self.y), goal_list)
-        self.patrol.start(ordered)
+        ordered_goals = goal_list if ordered else order_goals_by_nearest((self.x, self.y), goal_list)
+        self.patrol.start(ordered_goals)
         self.mode = MODE_PATROL
         self.paused = False
         self.blocked = None
@@ -901,16 +906,16 @@ class SimulationEngine:
         # 也避免前端再发一次 cancel_plan 触发"路线规划已取消"的误导提示。
         self.plan = None
         self._plan_current_segment()
-        logger.info("巡检启动，共 %d 个巡检点：%s", len(ordered), ordered)
+        logger.info("巡检启动，共 %d 个巡检点：%s", len(ordered_goals), ordered_goals)
         # V2.5：第一段就不可达时，不再发"已出发"的误导提示，明确告诉用户卡在哪。
         if self.paused or self.blocked:
-            goal = ordered[0]
+            goal = ordered_goals[0]
             self._emit_notice(f"巡检已启动，但无法前往 [{goal[0]}, {goal[1]}]，请先处理提示")
-        elif len(ordered) == 1:
-            goal = ordered[0]
+        elif len(ordered_goals) == 1:
+            goal = ordered_goals[0]
             self._emit_notice(f"已出发前往巡检点 [{goal[0]}, {goal[1]}]，单点任务")
         else:
-            self._emit_notice(f"自动巡检已启动，共 {len(ordered)} 个巡检点")
+            self._emit_notice(f"自动巡检已启动，共 {len(ordered_goals)} 个巡检点")
         return self.patrol.status_dict()
 
     def stop_patrol(self) -> dict:
@@ -1076,6 +1081,7 @@ class SimulationEngine:
                 self.path = []
                 self.patrol.finish()
                 self._emit_notice("巡检任务全部完成")
+                self._maybe_return_after_scheduled()
             else:
                 self._plan_current_segment()
         elif action == "stop":
@@ -1092,6 +1098,103 @@ class SimulationEngine:
         """获取巡检状态（REST GET /patrol/status）。"""
         return self.patrol.status_dict()
 
+    def _max_schedule_rounds(self, goals: list[tuple[int, int]]) -> int:
+        """按当前电量估算最多能巡检几轮（预留返航电量，V2.7.0）。"""
+        move_cost = config.settings.battery_move_cost
+        pos = (self.x, self.y)
+        steps = 0
+        for goal in goals:
+            result = astar(self.map.grid, pos, goal)
+            if not result["path"]:
+                return 1
+            steps += max(0, len(result["path"]) - 1)
+            pos = goal
+        per_round = steps * move_cost
+        charge = tuple(self.map.charge_point)
+        back = astar(self.map.grid, pos, charge)
+        back_steps = max(0, len(back["path"]) - 1) if back["path"] else 0
+        reserve = back_steps * move_cost + 2.0
+        budget = max(0.0, self.battery - reserve)
+        if per_round <= 1e-9:
+            return 1
+        return max(1, int(budget // per_round))
+
+    def add_schedule(self, time_str: str, goals: list, rounds: int = 1) -> dict:
+        """
+        添加定时巡检（V2.7.0）：到点后按给定顺序巡检，轮数受返航电量上限约束。
+        """
+        text = str(time_str or "").strip()
+        parts = text.split(":")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            self._emit_notice("时间格式应为 HH:MM，例如 09:30")
+            return self._command_payload()
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            self._emit_notice("时间超出范围：小时 0~23，分钟 0~59")
+            return self._command_payload()
+        goal_list = [tuple(int(v) for v in g) for g in (goals or [])]
+        if not goal_list:
+            self._emit_notice("定时巡检至少要选一个巡检点")
+            return self._command_payload()
+        max_rounds = self._max_schedule_rounds(goal_list)
+        try:
+            want_rounds = int(rounds or 1)
+        except (TypeError, ValueError):
+            want_rounds = 1
+        actual_rounds = max(1, min(want_rounds, max_rounds))
+        self._schedule_seq += 1
+        schedule = {
+            "id": self._schedule_seq,
+            "time": f"{hour:02d}:{minute:02d}",
+            "goals": [list(g) for g in goal_list],
+            "rounds": actual_rounds,
+            "max_rounds": max_rounds,
+            "last_run": None,
+        }
+        self.schedules.append(schedule)
+        logger.info("添加定时巡检：%s", schedule)
+        self._emit_notice(
+            f"已添加定时巡检 {schedule['time']}，{actual_rounds} 轮（按电量最多 {max_rounds} 轮）"
+        )
+        return self._command_payload()
+
+    def remove_schedule(self, schedule_id: int) -> dict:
+        """删除定时巡检（V2.7.0）。"""
+        before = len(self.schedules)
+        self.schedules = [s for s in self.schedules if s.get("id") != schedule_id]
+        if len(self.schedules) == before:
+            self._emit_notice("没有找到这个定时任务")
+        else:
+            self._emit_notice("已删除定时巡检")
+        return self._command_payload()
+
+    def _check_schedules(self) -> None:
+        """到点触发定时巡检（V2.7.0）；同一天每个任务只跑一次。"""
+        now = datetime.now()
+        key = now.strftime("%H:%M")
+        today = now.date().isoformat()
+        if self.mode != MODE_MANUAL:
+            return
+        for schedule in self.schedules:
+            if schedule.get("time") != key or schedule.get("last_run") == today:
+                continue
+            schedule["last_run"] = today
+            expanded = [list(g) for _ in range(int(schedule.get("rounds", 1))) for g in schedule["goals"]]
+            self._scheduled_return = True
+            self._emit_notice(
+                f"定时巡检开始：{schedule['time']}，{schedule.get('rounds', 1)} 轮共 {len(expanded)} 个点"
+            )
+            self.start_patrol(expanded, ordered=True)
+            break
+
+    def _maybe_return_after_scheduled(self) -> None:
+        """定时巡检跑完最后一个点后自动回充电点（V2.7.0）。"""
+        if not self._scheduled_return:
+            return
+        self._scheduled_return = False
+        self._emit_notice("定时巡检完成，返回充电点")
+        self.go_charge()
+
     def _has_reachable_next_goal(self) -> bool:
         """跳过当前点后，后面还有没有“不拆障碍也能到”的巡检点（V2.6.0）。"""
         if not self.patrol.running:
@@ -1100,6 +1203,51 @@ class SimulationEngine:
             if astar(self.map.grid, (self.x, self.y), goal)["path"]:
                 return True
         return False
+
+    def clear_and_charge(self) -> dict:
+        """低电量返航受阻时，清掉挡路障碍并继续返航（预留返航电量，V2.7.0）。"""
+        if not self.blocked or self.blocked.get("reason") != "charge_unreachable":
+            self._emit_notice("当前没有返航受阻的决策")
+            return self._command_payload()
+        cells = [list(c) for c in (self.blocked.get("cells") or [])]
+        if not cells:
+            self._emit_notice("挡路的是固定屏障，无法自动清除；请用「擦除」处理")
+            return self._command_payload()
+        total = 0.0
+        for cx, cy in cells:
+            total += config.settings.material_costs.get(
+                self.map.grid[cy][cx], config.settings.clear_obstacle_cost
+            )
+        total = round(total, 2)
+        return_cost = float(self.blocked.get("return_cost", 0.0))
+        if self.battery < total + return_cost + 1.0:
+            self._emit_notice(
+                f"电量不足：清除需 {total:.0f}%、返航需 {return_cost:.0f}%，"
+                f"当前只有 {self.battery:.1f}%；请用「擦除」手动清障"
+            )
+            return self._command_payload()
+        for cx, cy in cells:
+            value = self.map.grid[cy][cx]
+            if value not in CLEARABLE_CELLS:
+                continue
+            cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
+            self.map.grid[cy][cx] = 0
+            self.battery = max(0.0, round(self.battery - cost, 2))
+            self.pending = [c for c in self.pending if not (c[0] == cx and c[1] == cy)]
+        self.blocked = None
+        self.paused = False
+        self.patrol.paused = False
+        self._emit_map()
+        route = astar(self.map.grid, (self.x, self.y), tuple(self.map.charge_point))
+        if not route["path"]:
+            self._emit_notice("障碍已清除，但返航路线仍然不通；请检查固定屏障")
+            return self._command_payload()
+        self.mode = MODE_CHARGING
+        self.path = route["path"]
+        self.speed = 0.0
+        self._emit_notice(f"已清除 {len(cells)} 处障碍（-{total:.0f}%），继续返回充电点")
+        self._refresh_plan()
+        return self._command_payload()
 
     def _resume_charge_if_possible(self) -> bool:
         """
@@ -1297,6 +1445,7 @@ class SimulationEngine:
             "pending": [list(c) for c in self.pending],
             "trail_len": len(self.visited_trail),
             "avatar_version": self.avatar_version,
+            "schedules": [dict(s) for s in self.schedules],
         }
         return {"type": "state", "data": data}
 
@@ -1309,6 +1458,8 @@ class SimulationEngine:
         """
         moving = False
         arrived_goal = False
+        # 步骤 0：到点触发定时巡检（V2.7.0）
+        self._check_schedules()
         # 本 tick 走过的几何长度：直行 1、斜行 √2（V2.3.0 电量按距离折算）。
         step_len = 1.0
 
@@ -1371,6 +1522,7 @@ class SimulationEngine:
                 self.path = []
                 self.speed = 0.0
                 self._emit_notice("巡检任务全部完成")
+                self._maybe_return_after_scheduled()
             else:
                 self._plan_current_segment()
 
@@ -1463,6 +1615,14 @@ class SimulationEngine:
                         self.map.grid[cy][cx], config.settings.clear_obstacle_cost
                     )
                 total = round(total, 2)
+                # 返航移动耗电（按路径几何长度 × 单格移动耗电），用于判断“清完还够不够回去”
+                move_steps = 0.0
+                route_path = route.get("path") or []
+                for (ax, ay), (bx, by) in zip(route_path, route_path[1:]):
+                    move_steps += math.hypot(bx - ax, by - ay)
+                return_cost = round(move_steps * config.settings.battery_move_cost, 2)
+                can_clear_and_return = self.battery >= total + return_cost + 1.0
+                can_return_after_erase = self.battery >= return_cost + 0.5
                 self.mode = MODE_CHARGING
                 self.path = []
                 self.paused = True
@@ -1475,13 +1635,22 @@ class SimulationEngine:
                     "reason": "charge_unreachable",
                     "goal": list(charge),
                     "clear_cost": total,
+                    "return_cost": return_cost,
+                    "can_clear_and_return": can_clear_and_return,
+                    "can_return_after_erase": can_return_after_erase,
                     "can_skip": False,
                 }
                 if cells:
                     message = (
-                        f"电量不足，返航路线被 {len(cells)} 处障碍挡住；"
-                        "请用「擦除」清除挡路障碍，清完会自动继续返航"
+                        f"电量不足：返航路上有 {len(cells)} 处障碍（清除需 {total:.0f}%），"
+                        f"返航移动需 {return_cost:.0f}%"
                     )
+                    if can_clear_and_return:
+                        message += "；清完还够回充电点，可自动清除或手动擦除"
+                    elif can_return_after_erase:
+                        message += "；电量不够边清边回，请用「擦除」（不耗电）清掉障碍"
+                    else:
+                        message += "；即使擦除，剩余电量也不够返航，请先处理电量"
                 else:
                     message = "电量不足，返航路线被固定屏障/边界封死；请用「擦除」拆掉挡路屏障"
                 logger.warning("低电量返航受阻：%s", message)
