@@ -243,6 +243,12 @@ export class SimulatedService extends RobotService {
       `电量低于 ${LOW_BATTERY_THRESHOLD}%，自动返回充电点`,
       [this._state.x, this._state.y]
     )
+    // V2.5.6：自动返航要给一个显眼提示
+    this._emitEvent('notice', {
+      kind: 'auto_charge',
+      battery: this._state.battery,
+      message: `电量低于 ${LOW_BATTERY_THRESHOLD}%，已自动返航充电（当前 ${this._state.battery.toFixed(1)}%）`,
+    })
   }
 
   /**

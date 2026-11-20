@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.5</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.6</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -311,6 +311,41 @@
       @dismiss="showEmptyModal = false"
     />
 
+    <!-- 低电量自动返航大提示（V2.5.6）：机器人会自己走，必须显眼 -->
+    <div v-if="autoChargeAlert" class="fixed inset-0 z-[72] flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-black/40" @click="autoChargeAlert = null" />
+      <div class="relative w-full max-w-lg rounded-2xl border-2 border-amber-400 bg-white dark:bg-gray-900 p-6 shadow-2xl">
+        <div class="flex items-center gap-3">
+          <span class="flex items-center justify-center w-12 h-12 rounded-full bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300">
+            <svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
+          </span>
+          <div>
+            <h3 class="text-2xl font-bold text-gray-900 dark:text-gray-100">电量不足，自动返航充电</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">机器人已自己出发，不需要你操作</p>
+          </div>
+        </div>
+        <div class="mt-5 rounded-xl bg-amber-50 dark:bg-amber-900/20 p-4">
+          <div class="text-xs text-amber-700 dark:text-amber-300">当前电量</div>
+          <div class="text-4xl font-bold text-amber-700 dark:text-amber-300">
+            {{ autoChargeAlert.battery.toFixed(1) }}%
+          </div>
+          <p class="mt-2 text-sm text-amber-800 dark:text-amber-200">
+            {{ autoChargeAlert.message }}
+          </p>
+        </div>
+        <p class="mt-4 text-xs text-gray-400">
+          到达充电点后会自动充电；如果返航路线被挡住，会再弹窗让你处理。
+        </p>
+        <button
+          type="button"
+          class="mt-5 w-full px-4 py-3 text-base font-semibold rounded-xl bg-amber-500 text-white hover:bg-amber-600"
+          @click="autoChargeAlert = null"
+        >
+          知道了
+        </button>
+      </div>
+    </div>
+
     <!-- 首次访客引导（V2.5.2）：30 秒上手，只弹一次 -->
     <div v-if="showGuide" class="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div class="absolute inset-0 bg-black/50" @click="dismissGuide" />
@@ -465,6 +500,8 @@ const showSensors = ref(true)
 // 首次访客引导（V2.5.2）
 const GUIDE_KEY = 'irm_guide_seen_v1'
 const showGuide = ref(false)
+// 低电量自动返航的大提示（V2.5.6）
+const autoChargeAlert = ref(null)
 const mapContainerRef = ref(null)
 
 // 主题
@@ -580,6 +617,8 @@ onMounted(() => {
         temperatureHistory.value.shift()
       }
     }
+    // 离开充电模式就收起“自动返航”大提示
+    if (frame.data.mode !== 'charging') autoChargeAlert.value = null
   })
 
   // 连接可能在界面挂载前就因缺少密钥被拒绝，这里补读一次状态（V2.2.0）
@@ -627,6 +666,13 @@ onMounted(() => {
       }
       if (msg.includes('已完成')) {
         snapshots.value = service.getSnapshots()
+      }
+      // V2.5.6：低电量自动返航时给一个显眼的弹窗，避免“机器人突然自己走了”
+      if (frame.data && frame.data.kind === 'auto_charge') {
+        autoChargeAlert.value = {
+          battery: frame.data.battery,
+          message: msg,
+        }
       }
       addToast('notice', msg)
     }

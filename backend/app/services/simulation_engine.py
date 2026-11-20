@@ -1316,6 +1316,20 @@ class SimulationEngine:
                 self.patrol.paused = False
                 self.blocked = None
                 logger.warning("低电量触发自动返航充电（电量 %.1f%%）", self.battery)
+                # V2.5.6：自动返航是“突然发生”的，给前端一个显眼提示。
+                self._emit(
+                    {
+                        "type": "notice",
+                        "data": {
+                            "kind": "auto_charge",
+                            "battery": round(self.battery, 1),
+                            "message": (
+                                f"电量低于 {config.settings.low_battery_threshold:.0f}%，"
+                                f"已自动返航充电（当前 {self.battery:.1f}%）"
+                            ),
+                        },
+                    }
+                )
             elif not self._charge_unreachable_notified:
                 self._charge_unreachable_notified = True
                 self._emit_anomaly(
