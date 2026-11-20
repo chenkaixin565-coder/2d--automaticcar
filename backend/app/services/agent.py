@@ -288,7 +288,17 @@ def _as_int(value, field: str) -> int:
 
 
 def _as_cell(value, field: str) -> tuple[int, int]:
-    """把参数强制转成坐标 (x, y)。"""
+    """
+    把参数强制转成坐标 (x, y)。
+
+    V2.5：兼容大模型常见的几种写法——`[x, y]`、`{"x": .., "y": ..}`、`"x,y"`，
+    避免模型只差一个格式就被判成"参数非法"。
+    """
+    if isinstance(value, dict):
+        value = [value.get("x"), value.get("y")]
+    elif isinstance(value, str):
+        parts = [part for part in re.split(r"[,\s，]+", value.strip()) if part]
+        value = parts
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise AgentError(f"参数 {field} 必须是 [x, y] 两个整数")
     return _as_int(value[0], f"{field}.x"), _as_int(value[1], f"{field}.y")
@@ -439,7 +449,9 @@ _SYSTEM_PROMPT = """你是一个二维巡检机器人的指令解析器。用户
 {{"tool": "工具名", "args": {{...}}}}
 
 规则：
-- 坐标写作 [x, y]，x 是列、y 是行；
+- 坐标必须写成 [x, y] 数组（x 是列、y 是行），不要写成对象或字符串；
+- 例："规划到 15,8" → {{"tool": "plan_route", "args": {{"goal": [15, 8]}}}}；
+- 例："去 2 号巡检点" → {{"tool": "start_patrol", "args": {{"goal_index": 2}}}}；
 - 没有合适的工具时输出 {{"tool": "none", "args": {{}}}}；
 - 不要发明工具名或参数名。
 """
@@ -508,7 +520,6 @@ def _call_openai(text: str, timeout: float) -> dict:
         "model": config.settings.agent_llm_model,
         "temperature": 0,
         "max_tokens": 200,
-        "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _build_system_prompt()},
             {"role": "user", "content": text},
@@ -615,7 +626,7 @@ class AgentService:
 
         if tool == "plan_route":
             goal = args["goal"]
-            plan = engine.plan_route(goal)
+            plan = engine.plan_route(goal, "energy")
             if not plan["path"]:
                 suggestion = plan.get("suggestion")
                 if suggestion:

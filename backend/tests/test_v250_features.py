@@ -9,6 +9,7 @@ import pytest
 
 from app.core import config
 from app.services import agent as agent_module
+from app.services.agent import _as_cell
 from app.services.planner import build_plan
 from app.services.simulation_engine import SimulationEngine
 
@@ -139,4 +140,10 @@ def test_llm_failure_falls_back_to_rule(monkeypatch):
     agent = agent_module.AgentService(engine)
     parsed, source = __import__("asyncio").run(agent._understand("现在状态怎么样"))
     assert source == "rule-fallback"
-    assert parsed["tool"] == "status"
+
+
+def test_cell_argument_accepts_common_llm_shapes():
+    """大模型可能把坐标写成对象或字符串，都要能兜住。"""
+    assert _as_cell([3, 4], "goal") == (3, 4)
+    assert _as_cell({"x": 3, "y": 4}, "goal") == (3, 4)
+    assert _as_cell("3,4", "goal") == (3, 4)

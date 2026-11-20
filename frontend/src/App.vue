@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.0</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.5.1</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -125,6 +125,7 @@
           @set-material="paintValue = $event"
           @toggle-plan-mode="onTogglePlanMode"
           @go-charge="onGoCharge"
+          @drop-obstacle="onDropObstacle"
           @toggle-trail="onToggleTrail"
           @new-map="onOpenNewMap"
           @restart="onRestart"
@@ -837,6 +838,11 @@ function onTogglePlanMode() {
 /** 主动返航充电（V2.5）。 */
 function onGoCharge() {
   service.goCharge()
+}
+
+/** 测试用：在机器人正前方投放一格障碍（V2.5 动态障碍）。 */
+function onDropObstacle() {
+  service.dropObstacleAhead()
 }
 
 /** 打开预览前保存的视角，关闭预览时还原（V2.1.1）。 */

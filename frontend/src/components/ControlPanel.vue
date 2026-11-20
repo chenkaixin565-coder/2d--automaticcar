@@ -176,7 +176,7 @@
       :disabled="!pendingCount"
       @click="$emit('clear-nearest')"
     >
-      一键清最近{{ pendingCount ? `（${pendingCount} 处待清）` : '（无待清障）' }}
+      清理待清障{{ pendingCount ? `（${pendingCount} 处）` : '（无）' }}
     </button>
 
     <!-- 自动巡检 -->
@@ -227,10 +227,10 @@
         @click="$emit('resolve-fault')"
       >
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
-        一键排障
+        解除卡住
       </button>
       <p class="text-xs text-gray-500 dark:text-gray-400">
-        机器人被障碍卡住时，自动清除前方障碍并恢复正常控制
+        机器人被障碍卡住 / 巡检受阻时，清除挡路的那一格并恢复
       </p>
       <button
         type="button"
@@ -239,6 +239,14 @@
         @click="$emit('go-charge')"
       >
         返航充电
+      </button>
+      <button
+        type="button"
+        class="w-full px-3 py-2 text-xs font-medium rounded-lg border border-dashed border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400"
+        title="测试用：在机器人正前方投放一格石头，验证动态障碍"
+        @click="$emit('drop-obstacle')"
+      >
+        投放障碍（测试）
       </button>
       <!-- 空电状态：引导用户确认后搬回初始点 -->
       <button
@@ -464,6 +472,7 @@ const emit = defineEmits([
   'set-material',
   'toggle-plan-mode',
   'go-charge',
+  'drop-obstacle',
   'clear-goals',
   'remove-goal',
   'toggle-trail',
