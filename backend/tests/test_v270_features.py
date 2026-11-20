@@ -60,7 +60,18 @@ def test_schedule_rejects_bad_time():
 def test_schedule_auto_clear_flag():
     engine = blank_engine()
     engine.add_schedule("09:30", [[9, 6]], 1, False)
-    assert engine.schedules[0]["auto_clear"] is False
+    assert engine.schedules[0]["clear_mode"] == "pre"
+
+
+def test_schedule_pre_clear_removes_route_obstacles():
+    engine = blank_engine()
+    for y in range(1, 7):
+        engine.map.grid[y][4] = 1  # 一列石头挡住去路
+    before = engine.battery
+    engine.add_schedule("09:30", [[9, 6]], 1, clear_mode="pre")
+    assert engine.schedules[0]["clear_mode"] == "pre"
+    assert engine.battery < before, "提前清障应立即扣电"
+    assert any(engine.map.grid[y][4] == 0 for y in range(1, 7))
 
 
 def test_plan_clear_marks_manual_remaining():

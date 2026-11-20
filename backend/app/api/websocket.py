@@ -268,6 +268,7 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
             payload.get("goals") or [],
             int(payload.get("rounds", 1)),
             bool(payload.get("auto_clear", True)),
+            payload.get("clear_mode"),
         )
     elif action == "remove_schedule":
         engine.remove_schedule(int(payload.get("id", 0)))

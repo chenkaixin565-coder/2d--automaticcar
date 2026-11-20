@@ -397,20 +397,21 @@ function drawPlanMarks(ctx) {
 function drawPendingMarks(ctx) {
   const cells = props.pending || []
   if (!cells.length) return
-  const inset = CELL_PIXELS * 0.28
   ctx.save()
-  ctx.strokeStyle = '#f59e0b'
-  ctx.lineWidth = 2 / props.scale
-  cells.forEach((cell) => {
+  cells.forEach((cell, index) => {
     const x = cell[0] * CELL_PIXELS
     const y = cell[1] * CELL_PIXELS
-    ctx.strokeRect(x + inset, y + inset, CELL_PIXELS - inset * 2, CELL_PIXELS - inset * 2)
-    ctx.beginPath()
-    ctx.moveTo(x + inset, y + inset)
-    ctx.lineTo(x + CELL_PIXELS - inset, y + CELL_PIXELS - inset)
-    ctx.moveTo(x + CELL_PIXELS - inset, y + inset)
-    ctx.lineTo(x + inset, y + CELL_PIXELS - inset)
-    ctx.stroke()
+    // 半透明底色 + 粗描边，保证在深色障碍上也一眼能看到
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.45)'
+    ctx.fillRect(x + 1, y + 1, CELL_PIXELS - 2, CELL_PIXELS - 2)
+    ctx.strokeStyle = '#b45309'
+    ctx.lineWidth = 3 / props.scale
+    ctx.strokeRect(x + 2, y + 2, CELL_PIXELS - 4, CELL_PIXELS - 4)
+    ctx.fillStyle = '#7c2d12'
+    ctx.font = `bold ${Math.max(10, CELL_PIXELS * 0.42) / props.scale}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(index + 1), x + CELL_PIXELS / 2, y + CELL_PIXELS / 2)
   })
   ctx.restore()
 }

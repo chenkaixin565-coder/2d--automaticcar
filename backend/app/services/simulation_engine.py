@@ -1142,30 +1142,70 @@ class SimulationEngine:
         """获取巡检状态（REST GET /patrol/status）。"""
         return self.patrol.status_dict()
 
-    def _max_schedule_rounds(self, goals: list[tuple[int, int]]) -> int:
-        """按当前电量估算最多能巡检几轮（预留返航电量，V2.7.0）。"""
+    def _schedule_estimate(self, goals: list[tuple[int, int]]) -> dict | None:
+        """估算一轮巡检的路线障碍、清障耗电、移动耗电和返航耗电（V2.7.2）。"""
         move_cost = config.settings.battery_move_cost
         pos = (self.x, self.y)
-        steps = 0
+        steps = 0.0
+        obstacles: list[list[int]] = []
         for goal in goals:
-            result = astar(self.map.grid, pos, goal)
-            if not result["path"]:
-                return 1
-            steps += max(0, len(result["path"]) - 1)
+            route = plan_route(
+                self.map.grid,
+                pos,
+                goal,
+                move_cost,
+                config.settings.material_costs,
+                "distance",
+            )
+            if not route.get("path"):
+                return None
+            path = route["path"]
+            for (ax, ay), (bx, by) in zip(path, path[1:]):
+                steps += math.hypot(bx - ax, by - ay)
+            for cell in route.get("obstacles_on_path", []):
+                if cell not in obstacles:
+                    obstacles.append(list(cell))
             pos = goal
-        per_round = steps * move_cost
-        charge = tuple(self.map.charge_point)
-        back = astar(self.map.grid, pos, charge)
-        back_steps = max(0, len(back["path"]) - 1) if back["path"] else 0
-        reserve = back_steps * move_cost + 2.0
-        budget = max(0.0, self.battery - reserve)
-        if per_round <= 1e-9:
-            return 1
-        return max(1, int(budget // per_round))
+        clear_cost = 0.0
+        for cx, cy in obstacles:
+            clear_cost += config.settings.material_costs.get(
+                self.map.grid[cy][cx], config.settings.clear_obstacle_cost
+            )
+        back = astar(self.map.grid, pos, tuple(self.map.charge_point))
+        back_steps = 0.0
+        if back["path"]:
+            for (ax, ay), (bx, by) in zip(back["path"], back["path"][1:]):
+                back_steps += math.hypot(bx - ax, by - ay)
+        return {
+            "obstacles": obstacles,
+            "clear_cost": round(clear_cost, 2),
+            "per_round": round(steps * move_cost, 2),
+            "return_cost": round(back_steps * move_cost + 2.0, 2),
+        }
 
-    def add_schedule(self, time_str: str, goals: list, rounds: int = 1, auto_clear: bool = True) -> dict:
+    def _max_schedule_rounds(self, goals: list[tuple[int, int]], clear_cost: float = 0.0) -> int:
+        """按当前电量估算最多能巡检几轮（预留返航电量与一次性清障，V2.7.2）。"""
+        estimate = self._schedule_estimate(goals)
+        if estimate is None or estimate["per_round"] <= 1e-9:
+            return 1
+        budget = self.battery - estimate["return_cost"] - clear_cost
+        if budget < estimate["per_round"]:
+            return 0
+        return max(0, int(budget // estimate["per_round"]))
+
+    def add_schedule(
+        self,
+        time_str: str,
+        goals: list,
+        rounds: int = 1,
+        auto_clear: bool = True,
+        clear_mode: str | None = None,
+    ) -> dict:
         """
-        添加定时巡检（V2.7.0）：到点后按给定顺序巡检，轮数受返航电量上限约束。
+        添加定时巡检（V2.7.2）：必须提前决定清障方式——
+        - pre：现在就清掉路线障碍，到点直接巡检；
+        - auto：巡检途中遇到障碍自动清（不再询问）。
+        两种都会先按“轮数 + 清障 + 返航”估算电量。
         """
         text = str(time_str or "").strip()
         parts = text.split(":")
@@ -1180,12 +1220,39 @@ class SimulationEngine:
         if not goal_list:
             self._emit_notice("定时巡检至少要选一个巡检点")
             return self._command_payload()
-        max_rounds = self._max_schedule_rounds(goal_list)
+        mode = clear_mode or ("auto" if auto_clear else "pre")
+        if mode not in ("pre", "auto"):
+            mode = "pre"
+
+        estimate = self._schedule_estimate(goal_list)
+        if estimate is None:
+            self._emit_notice("定时巡检路线不可达，请先检查地图")
+            return self._command_payload()
+        clear_cost = estimate["clear_cost"]
+        max_rounds = self._max_schedule_rounds(goal_list, clear_cost)
+        if max_rounds < 1:
+            self._emit_notice(
+                f"电量不足以完成一轮并返航（清障 {clear_cost:.0f}% + 移动 {estimate['per_round']:.0f}% "
+                f"+ 返航 {estimate['return_cost']:.0f}%），请先充电"
+            )
+            return self._command_payload()
         try:
             want_rounds = int(rounds or 1)
         except (TypeError, ValueError):
             want_rounds = 1
         actual_rounds = max(1, min(want_rounds, max_rounds))
+
+        if mode == "pre" and estimate["obstacles"]:
+            for cx, cy in estimate["obstacles"]:
+                value = self.map.grid[cy][cx]
+                if value not in CLEARABLE_CELLS:
+                    continue
+                cost = config.settings.material_costs.get(value, config.settings.clear_obstacle_cost)
+                self.map.grid[cy][cx] = 0
+                self.battery = max(0.0, round(self.battery - cost, 2))
+                self.pending = [c for c in self.pending if not (c[0] == cx and c[1] == cy)]
+            self._emit_map()
+
         self._schedule_seq += 1
         schedule = {
             "id": self._schedule_seq,
@@ -1193,14 +1260,20 @@ class SimulationEngine:
             "goals": [list(g) for g in goal_list],
             "rounds": actual_rounds,
             "max_rounds": max_rounds,
-            "auto_clear": bool(auto_clear),
+            "clear_mode": mode,
+            "clear_cost": clear_cost,
+            "obstacles": estimate["obstacles"],
+            "per_round_cost": estimate["per_round"],
+            "return_cost": estimate["return_cost"],
             "timezone": "Asia/Shanghai",
             "last_run": None,
         }
         self.schedules.append(schedule)
         logger.info("添加定时巡检：%s", schedule)
+        mode_text = "提前清障" if mode == "pre" else "巡检中自动清障"
         self._emit_notice(
-            f"已添加定时巡检 {schedule['time']}，{actual_rounds} 轮（按电量最多 {max_rounds} 轮）"
+            f"已添加 {schedule['time']} 定时巡检：{actual_rounds} 轮（最多 {max_rounds} 轮），"
+            f"{mode_text}，清障 {clear_cost:.0f}%"
         )
         return self._command_payload()
 
@@ -1227,7 +1300,7 @@ class SimulationEngine:
             schedule["last_run"] = today
             expanded = [list(g) for _ in range(int(schedule.get("rounds", 1))) for g in schedule["goals"]]
             self._scheduled_return = True
-            self._scheduled_auto_clear = bool(schedule.get("auto_clear", True))
+            self._scheduled_auto_clear = schedule.get("clear_mode", "auto") == "auto"
             self._emit_notice(
                 f"定时巡检开始：{schedule['time']}（北京时间），"
                 f"{schedule.get('rounds', 1)} 轮共 {len(expanded)} 个点"
@@ -1398,6 +1471,9 @@ class SimulationEngine:
                 "goal": list(goal),
                 "can_skip": self._has_reachable_next_goal(),
             }
+            # V2.7.2：立刻把建议清除的格子记入待清障，地图上才有标记
+            if list(suggestion) not in self.pending:
+                self.pending.append(list(suggestion))
             self.path = []
             self.speed = 0.0
             logger.info(
@@ -1440,6 +1516,9 @@ class SimulationEngine:
                 "clear_cost": total,
                 "can_skip": self._has_reachable_next_goal(),
             }
+            for item in cells:
+                if item not in self.pending:
+                    self.pending.append(item)
             self.path = []
             self.speed = 0.0
             logger.info(

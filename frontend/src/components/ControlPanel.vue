@@ -197,6 +197,7 @@
     >
       清理待清障{{ pendingCount ? `（${pendingCount} 处）` : '（无）' }}
     </button>
+    <p class="text-xs text-gray-400 dark:text-gray-500">地图上橙色数字 = 待清障格</p>
 
     <!-- 自动巡检 -->
     <div class="space-y-2">

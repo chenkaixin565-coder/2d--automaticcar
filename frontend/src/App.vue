@@ -4,7 +4,7 @@
     <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 shrink-0">
       <div class="flex items-center gap-2">
         <h1 class="text-base md:text-lg font-semibold truncate">智能巡检机器人二维仿真系统</h1>
-        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.7.1</span>
+        <span class="hidden sm:inline px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">V2.7.2</span>
         <span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">{{ dataModeLabel }}</span>
       </div>
       <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
@@ -323,10 +323,17 @@
             <input v-model.number="scheduleRounds" type="number" min="1" max="20" class="mt-1 w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
           </label>
         </div>
-        <label class="mt-3 flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-          <input v-model="scheduleAutoClear" type="checkbox" class="accent-primary-600">
-          遇到障碍自动清除（预留返航电量）
-        </label>
+        <div class="mt-3 space-y-1">
+          <div class="text-xs text-gray-600 dark:text-gray-300">清障方式（创建时确定，巡检中不再询问）</div>
+          <label class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+            <input v-model="scheduleClearMode" type="radio" value="pre" class="accent-primary-600">
+            提前清好：现在扣电清障，到点直接巡检
+          </label>
+          <label class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+            <input v-model="scheduleClearMode" type="radio" value="auto" class="accent-primary-600">
+            巡检中自动清：到点遇到障碍再扣电清除
+          </label>
+        </div>
         <div class="mt-3">
           <div class="text-xs text-gray-600 dark:text-gray-300 mb-1">巡检顺序</div>
           <div v-if="scheduleGoals.length === 0" class="text-xs text-gray-400">地图上还没有巡检点</div>
@@ -363,7 +370,8 @@
               <span>
                 <span class="font-mono">{{ item.time }}</span>
                 · {{ item.rounds }}/{{ item.max_rounds }} 轮 · {{ item.goals.length }} 个点
-                · {{ item.auto_clear === false ? '不自动清障' : '自动清障' }}
+                · {{ item.clear_mode === 'auto' ? '巡检中自动清' : '提前清好' }}
+                · 清障 {{ Math.round(item.clear_cost || 0) }}%
               </span>
               <button type="button" class="text-red-500 hover:text-red-600" @click="onRemoveSchedule(item.id)">删除</button>
             </div>
@@ -421,26 +429,53 @@
       </div>
     </div>
 
-    <!-- 首次访客引导（V2.5.2）：30 秒上手，只弹一次 -->
+    <!-- 首次访客引导（V2.7.2）：4 步启动教程，只弹一次 -->
     <div v-if="showGuide" class="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div class="absolute inset-0 bg-black/50" @click="dismissGuide" />
       <div class="relative w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-5 shadow-2xl">
-        <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">30 秒上手</h3>
-        <ol class="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300 list-decimal list-inside">
-          <li>在地图上点蓝色巡检点，或在右侧「路线规划」里选目标。</li>
-          <li>点「预览规划路线」看路线和耗电，再点「前往该点」只巡这一个。</li>
-          <li>想手动玩：方向键或右侧按钮；「开始巡检」会按顺序跑完全部巡检点。</li>
-        </ol>
-        <p class="mt-3 text-xs text-gray-400">演示模式：没有密钥也能浏览；写操作会提示输入操作密钥。</p>
-        <p class="mt-1 text-xs text-amber-500 dark:text-amber-400">
-          提示：「重新开始 / 复位」会回满电，只是为了演示方便；真实流程要返回充电点才算充满。
-        </p>
-        <button
-          type="button"
-          class="mt-4 w-full px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
-          @click="dismissGuide"
-        >
-          知道了，开始体验
+        <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">启动教程</h3>
+        <p class="mt-1 text-xs text-gray-400">第 {{ guideStep + 1 }} 步，共 4 步</p>
+        <div class="mt-3 min-h-[6.5rem] space-y-2 text-sm text-gray-600 dark:text-gray-300">
+          <template v-if="guideStep === 0">
+            <p><strong>1. 地图与巡检点</strong></p>
+            <p>地图上蓝色圆点就是巡检点，点一下即可选中；右侧可以预览路线、改目标点。</p>
+            <p>橙色数字/叉号 = 待清障，鼠标悬停任意格子能看坐标和类型。</p>
+          </template>
+          <template v-else-if="guideStep === 1">
+            <p><strong>2. 路线规划与清障</strong></p>
+            <p>点「预览规划路线」会算路程、待清障和耗电；能绕开就绕，绕不开才清障。</p>
+            <p>电量不够自动清时，会提示你用「擦除」手动清（擦除不耗电）。</p>
+          </template>
+          <template v-else-if="guideStep === 2">
+            <p><strong>3. 巡检与电量</strong></p>
+            <p>「开始巡检」按顺序跑完全部巡检点；低电量会自动返航充电，返航被挡会暂停等你处理。</p>
+            <p class="text-amber-500 dark:text-amber-400">「重新开始 / 复位」回满电只是演示；真实流程要回充电点。</p>
+          </template>
+          <template v-else>
+            <p><strong>4. 定时巡检与一句话指令</strong></p>
+            <p>「定时巡检」可设时间、顺序、轮数，并在创建时确定提前清障还是途中自动清。</p>
+            <p>右侧「智能指令」支持自然语言，例如“去 5,5 巡检”“回充电点”。</p>
+          </template>
+        </div>
+        <div class="mt-4 flex gap-2">
+          <button
+            v-if="guideStep > 0"
+            type="button"
+            class="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300"
+            @click="guideStep -= 1"
+          >
+            上一步
+          </button>
+          <button
+            type="button"
+            class="flex-1 px-3 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+            @click="guideStep < 3 ? (guideStep += 1) : dismissGuide()"
+          >
+            {{ guideStep < 3 ? '下一步' : '开始使用' }}
+          </button>
+        </div>
+        <button type="button" class="mt-2 w-full text-xs text-gray-400 hover:text-gray-600" @click="dismissGuide">
+          跳过教程
         </button>
       </div>
     </div>
@@ -578,6 +613,7 @@ const showSensors = ref(true)
 // 首次访客引导（V2.5.2）
 const GUIDE_KEY = 'irm_guide_seen_v1'
 const showGuide = ref(false)
+const guideStep = ref(0)
 // 低电量自动返航的大提示（V2.5.6）
 const autoChargeAlert = ref(null)
 // 定时巡检（V2.7.0）
@@ -585,7 +621,7 @@ const showSchedule = ref(false)
 const scheduleTime = ref('09:00')
 const scheduleRounds = ref(1)
 const scheduleGoals = ref([])
-const scheduleAutoClear = ref(true)
+const scheduleClearMode = ref('pre')
 const mapContainerRef = ref(null)
 
 // 主题
@@ -1046,7 +1082,7 @@ function onAddSchedule() {
     scheduleTime.value,
     scheduleGoals.value,
     scheduleRounds.value,
-    scheduleAutoClear.value
+    scheduleClearMode.value
   )
 }
 
