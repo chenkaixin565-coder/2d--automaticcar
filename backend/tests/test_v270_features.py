@@ -4,7 +4,7 @@ V2.7.0 测试：低电量返航预算 + 定时巡检。
 
 from datetime import datetime
 
-from app.services.simulation_engine import SimulationEngine
+from app.services.simulation_engine import LOCAL_TZ, SimulationEngine
 
 
 def blank_engine(goals=None) -> SimulationEngine:
@@ -44,7 +44,7 @@ def test_add_schedule_and_trigger():
     schedule = engine.schedules[0]
     assert 1 <= schedule["rounds"] <= schedule["max_rounds"]
 
-    engine.schedules[0]["time"] = datetime.now().strftime("%H:%M")
+    engine.schedules[0]["time"] = datetime.now(LOCAL_TZ).strftime("%H:%M")
     engine.mode = "manual"
     engine.tick()
     assert engine.mode == "patrol"
