@@ -1017,7 +1017,8 @@ export class SimulatedService extends RobotService {
    * 重新开始：复位机器人但保留已走过的尾迹（V2.0）。
    */
   restart() {
-    this.reset(true)
+    // V2.5.4：重新开始也清空尾迹
+    this.reset(false)
   }
 
   /**

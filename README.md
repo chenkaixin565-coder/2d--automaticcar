@@ -2,7 +2,7 @@
 
 **在线演示：[https://irm-sim-2d.onrender.com](https://irm-sim-2d.onrender.com)** ｜ **静态版（无后端，纯浏览器仿真）：[https://chenkaixin565-coder.github.io/2d--automaticcar/](https://chenkaixin565-coder.github.io/2d--automaticcar/)**
 
-当前版本 V2.5.3 ｜ 源码：[chenkaixin565-coder/2d--automaticcar](https://github.com/chenkaixin565-coder/2d--automaticcar)
+当前版本 V2.5.4 ｜ 源码：[chenkaixin565-coder/2d--automaticcar](https://github.com/chenkaixin565-coder/2d--automaticcar)
 
 浏览器里开一张二维栅格地图，一台虚拟机器人在地图上走。你可以用方向键遥控它，也可以打一句话让它自己规划路线。地图就是个二维数组，用 Canvas 画出来；后端负责仿真、寻路、传感器读数和异常检测，前端只负责画和收指令。后端顺手把打包好的前端静态文件也托管了，所以整个项目一个容器就能跑完。
 
@@ -21,11 +21,11 @@
 结课提交只需要可拉取的镜像地址。镜像由 GitHub Actions 自动构建（见 `.github/workflows/docker-publish.yml`），内含前端构建产物、后端与共享规则，单容器即可运行。
 
 ```bash
-docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.3
-docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.3
+docker pull ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.4
+docker run --rm -p 8000:8000 ghcr.io/chenkaixin565-coder/2d--automaticcar:V2.5.4
 ```
 
-打开 http://localhost:8000 即可。也可以把 `V2.5.3` 换成 `latest`。
+打开 http://localhost:8000 即可。也可以把 `V2.5.4` 换成 `latest`。
 
 ## 跑起来
 

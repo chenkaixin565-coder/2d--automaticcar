@@ -48,7 +48,7 @@ from app.core.shared import load_default_map
 from app.models.map import GridMap
 from app.services.anomaly import create_detector
 from app.services.patrol import PatrolManager, find_min_obstacle_to_remove, order_goals_by_nearest
-from app.services.planner import build_plan
+from app.services.planner import build_plan, plan_route
 from app.services.sensors import SensorSimulator
 
 logger = logging.getLogger("simulation.engine")
@@ -269,7 +269,9 @@ class SimulationEngine:
                     "goal": goal,
                     "message": message,
                     "battery": round(self.battery, 1),
-                    "clear_cost": config.settings.clear_obstacle_cost,
+                    "clear_cost": (self.blocked or {}).get(
+                        "clear_cost", config.settings.clear_obstacle_cost
+                    ),
                 },
             }
         )
@@ -933,6 +935,41 @@ class SimulationEngine:
         # 否则这里会抛 TypeError，前端所有按钮都"没反应"。
         raw_cell = self.blocked.get("cell")
         cell = list(raw_cell) if raw_cell else None
+        # V2.5.4：blocked 里可能带一整批待清障碍（cells），按批量清除处理。
+        batch = [list(c) for c in (self.blocked.get("cells") or [])]
+        if action == "clear" and batch:
+            total = 0.0
+            for cx, cy in batch:
+                value = self.map.grid[cy][cx]
+                if value in CLEARABLE_CELLS:
+                    total += config.settings.material_costs.get(
+                        value, config.settings.clear_obstacle_cost
+                    )
+            total = round(total, 2)
+            if self.battery + 1e-9 < total:
+                message = f"电量不足：清除 {len(batch)} 处障碍需要 {total:.0f}%，当前 {self.battery:.1f}%"
+                self._emit_notice(message)
+                return self._command_payload()
+            for cx, cy in batch:
+                value = self.map.grid[cy][cx]
+                if value not in CLEARABLE_CELLS:
+                    continue
+                cost = config.settings.material_costs.get(
+                    value, config.settings.clear_obstacle_cost
+                )
+                self.map.grid[cy][cx] = 0
+                self.battery = max(0.0, round(self.battery - cost, 2))
+                self.pending = [c for c in self.pending if not (c[0] == cx and c[1] == cy)]
+            self.blocked = None
+            self.paused = False
+            self.patrol.paused = False
+            self.patrol.blocked_by = None
+            self._emit_map()
+            self._emit_notice(f"已清除 {len(batch)} 处障碍（共 {total:.0f}%），继续前往巡检点")
+            if self.patrol.running:
+                self._plan_current_segment()
+            return self._command_payload()
+
         if action == "clear" and cell is None:
             self._emit_notice("当前阻挡不是单格障碍，无法清除；请选择跳过或停止")
             return self._command_payload()
@@ -1018,16 +1055,56 @@ class SimulationEngine:
             )
             return
 
-        # V2.5：连单格拆除都无解时，不再静默跳过——暂停并让用户决定跳过还是停止。
+        # V2.5.4：单格拆除救不了时，再按“穿障路线”找出一整批需要清的障碍。
+        # 例如目标四周被 4 块石头围住：拆一格仍不通，但四格全清就能到。
+        route = plan_route(
+            self.map.grid,
+            (self.x, self.y),
+            goal,
+            config.settings.battery_move_cost,
+            config.settings.material_costs,
+            "distance",
+        )
+        cells = [list(c) for c in route.get("obstacles_on_path", [])]
+        if cells and route.get("path"):
+            total = 0.0
+            for cx, cy in cells:
+                value = self.map.grid[cy][cx]
+                total += config.settings.material_costs.get(
+                    value, config.settings.clear_obstacle_cost
+                )
+            total = round(total, 2)
+            self.paused = True
+            self.patrol.paused = True
+            self.patrol.blocked_by = cells[0]
+            self.blocked = {
+                "cell": cells[0],
+                "cells": cells,
+                "reason": "unreachable",
+                "goal": list(goal),
+                "clear_cost": total,
+            }
+            self.path = []
+            self.speed = 0.0
+            logger.info(
+                "巡检点 %s 需要清除 %d 处障碍（合计 %.1f%%）才能到达", goal, len(cells), total
+            )
+            self._emit_blocked(
+                f"无法到达巡检点 [{goal[0]}, {goal[1]}]：需要先清除 {len(cells)} 处障碍"
+                f"（合计 {total:.0f}%），是否全部清除？"
+            )
+            return
+
+        # 连“全部可清障碍”都打不通：说明被固定屏障/边界隔断，只能跳过或人工处理。
         self.paused = True
         self.patrol.paused = True
         self.patrol.blocked_by = None
         self.blocked = {"cell": None, "reason": "unreachable", "goal": list(goal)}
         self.path = []
         self.speed = 0.0
-        logger.info("巡检点 %s 四周被封死，已暂停等待用户决策", goal)
+        logger.info("巡检点 %s 被固定屏障/边界隔断，已暂停等待用户决策", goal)
         self._emit_blocked(
-            f"无法到达巡检点 [{goal[0]}, {goal[1]}]：四周被屏障封死，清障也打不通；请选择跳过或停止"
+            f"无法到达巡检点 [{goal[0]}, {goal[1]}]：没有可行路线（被固定屏障或边界隔断）；请选择跳过或停止"
         )
 
     def _handle_patrol_blocked(self, blocked_cell: list[int]) -> None:

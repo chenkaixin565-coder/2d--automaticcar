@@ -246,7 +246,8 @@ def _dispatch(engine: SimulationEngine, action: str, payload: dict) -> None:
     elif action == "reset":
         engine.reset(keep_trail=bool(payload.get("keep_trail", False)))
     elif action == "restart":
-        engine.reset(keep_trail=True)
+        # V2.5.4：重新开始也清空尾迹
+        engine.reset(keep_trail=False)
     elif action == "resolve_fault":
         engine.resolve_fault()
     elif action == "plan":

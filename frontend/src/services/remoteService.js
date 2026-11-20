@@ -464,7 +464,8 @@ export class RemoteService extends RobotService {
    * 重新开始（V2.0）：复位机器人但保留尾迹。
    */
   restart() {
-    this.reset(true)
+    // V2.5.4：重新开始也清空尾迹，避免旧路径残留在图上
+    this.reset(false)
   }
 
   /**

@@ -41,8 +41,8 @@
         </p>
 
         <ul v-if="!isChargeUnreachable && !(isUnreachable && !cell)" class="mt-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
-          <li v-if="isUnreachable">· 清除：扣 5% 电量拆掉 <span v-if="cell" class="font-mono">[{{ cell[0] }}, {{ cell[1] }}]</span>，重新规划后继续</li>
-          <li v-else>· 清除：扣 5% 电量，原地清除后继续巡检</li>
+          <li v-if="isUnreachable">· 清除：扣 {{ clearCost }}% 电量拆掉 {{ cellCount || 1 }} 处障碍，重新规划后继续</li>
+          <li v-else>· 清除：扣 {{ clearCost }}% 电量，原地清除后继续巡检</li>
           <li>· 跳过：保留障碍并记入"待清障"，跳过当前巡检点</li>
           <li>· 停止：结束本次巡检，回到手动模式</li>
         </ul>
@@ -100,10 +100,10 @@
             <button
               type="button"
               class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              :disabled="battery < clearCost || !cell"
+              :disabled="battery < clearCost || cellCount === 0"
               @click="$emit('decide', 'clear')"
             >
-              清除{{ isUnreachable ? '该障碍并重新规划' : '此处障碍' }}（-{{ clearCost }}%）并继续
+              清除{{ isUnreachable ? `这 ${cellCount} 处障碍并重新规划` : '此处障碍' }}（-{{ clearCost }}%）并继续
             </button>
             <button
               type="button"
@@ -167,6 +167,11 @@ const props = defineProps({
   clearCost: {
     type: Number,
     default: 5,
+  },
+  // 本次需要清除几处（V2.5.4：可能是一整批，比如目标四周被石头围住）
+  cellCount: {
+    type: Number,
+    default: 0,
   },
 })
 
