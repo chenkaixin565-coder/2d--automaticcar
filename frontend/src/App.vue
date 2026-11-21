@@ -176,9 +176,10 @@
           :snapshots="snapshots"
           :current-index="playbackIndex"
           :is-playing="playbackPlaying"
-          @seek="playbackIndex = $event"
+          @seek="onSeekPlayback"
           @play="startPlayback"
           @pause="stopPlayback"
+          @exit="onExitPlayback"
         />
         <AlertList :anomalies="anomalies" @clear="onClearAlerts" @export="onExportAlerts" />
       </aside>
@@ -237,9 +238,10 @@
             :snapshots="snapshots"
             :current-index="playbackIndex"
             :is-playing="playbackPlaying"
-            @seek="playbackIndex = $event"
+            @seek="onSeekPlayback"
             @play="startPlayback"
             @pause="stopPlayback"
+            @exit="onExitPlayback"
           />
           <AlertList :anomalies="anomalies" @clear="onClearAlerts" @export="onExportAlerts" />
         </div>
@@ -674,9 +676,12 @@ const patrolBlockedCell = computed(() => patrolStatus.value.blocked_by || null)
 // 回放
 const playbackIndex = ref(0)
 const playbackPlaying = ref(false)
+// 快照存在不等于正在看回放：只有点了播放或拖了进度条才算，
+// 否则巡检一完成、快照一落库，地图就会被钉在回放帧上。
+const playbackActive = ref(false)
 let playbackTimer = null
 const playbackSnapshot = computed(() => {
-  if (snapshots.value.length === 0) return null
+  if (!playbackActive.value || snapshots.value.length === 0) return null
   const snap = snapshots.value[playbackIndex.value] || snapshots.value[snapshots.value.length - 1]
   if (!snap) return null
   // V2.0：快照只保存尾迹长度，渲染时再切片，避免每帧深拷贝整条轨迹。
@@ -798,6 +803,7 @@ onMounted(() => {
       }
       if (msg.includes('已完成')) {
         snapshots.value = service.getSnapshots()
+        playbackIndex.value = 0
       }
       // V2.5.6：低电量自动返航时给一个显眼的弹窗，避免“机器人突然自己走了”
       if (frame.data && frame.data.kind === 'auto_charge') {
@@ -980,13 +986,13 @@ watch(
 )
 
 function onMove(payload) {
+  leaveReplay()
   service.move(payload.dx, payload.dy)
 }
 
 function onReset() {
   service.reset(false)
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
 }
 
 // 一键排障已移除（V2.6.0：与手动/一键清障功能重叠）。
@@ -1005,6 +1011,7 @@ function handleKeyDown(event) {
   const move = keyMap[event.key]
   if (move) {
     event.preventDefault()
+    leaveReplay()
     service.move(move.dx, move.dy)
   }
 }
@@ -1014,6 +1021,8 @@ function handleKeyDown(event) {
 // --------------------------------------------------------------------------
 
 function onStartPatrol() {
+  // 开始巡检前先退出回放，否则地图停在旧快照上，机器人走了也看不见。
+  clearReplay()
   // V2.3.2：有路线预览时，只去预览的那一个点，不再连带后面的巡检点；
   // 没有预览时，才按地图上的全部巡检点做一次完整巡检。
   if (routePlan.value && routePlan.value.goal) {
@@ -1038,6 +1047,7 @@ function onStopPatrol() {
  * @param {number[]} goal - 目标巡检点 [x, y]。
  */
 function onPlanRoute(goal) {
+  clearReplay()
   service.planRoute(goal, planMode.value)
   // 手机端：预览浮层要独占视野，先把详情浮窗收起来
   if (window.innerWidth < 768) drawerOpen.value = false
@@ -1053,6 +1063,7 @@ function onTogglePlanMode() {
 
 /** 主动返航充电（V2.5）。 */
 function onGoCharge() {
+  leaveReplay()
   service.goCharge()
 }
 
@@ -1208,6 +1219,7 @@ function onPlanStart(payload) {
     return
   }
   const goal = [plan.goal[0], plan.goal[1]]
+  clearReplay()
   keepViewOnPlanEnd = true
   if (mode === 'clear' && plan.clearable.length > 0) {
     // 先按预算清掉路线上的障碍，再出发；清完的路径就是预览里那条直线。
@@ -1237,6 +1249,7 @@ function onPlanCancel() {
 
 /** 按当前规划批量清除电力预算内的障碍。 */
 function onExecutePlanClear() {
+  leaveReplay()
   service.executePlanClear()
 }
 
@@ -1251,11 +1264,13 @@ function onCancelPlan() {
  * @param {Object} payload - { x, y } 障碍格坐标。
  */
 function onClearObstacle({ x, y }) {
+  leaveReplay()
   service.clearObstacleAt([x, y])
 }
 
 /** 清除巡检受阻点（自动巡检发现障碍且无法绕行时的一键清障）。 */
 function onClearBlockedObstacle() {
+  leaveReplay()
   const blocked = patrolStatus.value.blocked_by
   if (blocked) {
     service.clearObstacleAt([blocked[0], blocked[1]])
@@ -1270,6 +1285,7 @@ function onCarryHomePrompt() {
 /** 用户确认搬回：服务层把机器人传送回起点并恢复满电。 */
 function onCarryHomeConfirm() {
   showEmptyModal.value = false
+  leaveReplay()
   service.carryBackHome()
 }
 
@@ -1279,6 +1295,7 @@ function onCarryHomeConfirm() {
  * @param {'clear'|'skip'|'stop'} action - 决策动作。
  */
 function onBlockedDecision(action) {
+  leaveReplay()
   blockedCell.value = null
   // V2.7.0：预留了返航电量时，可以清除挡路障碍后继续返航
   if (action === 'clear-charge') {
@@ -1313,14 +1330,14 @@ function onBlockedDecision(action) {
 
 /** 一键清理待清障（V2.6.0：一次清掉电量够清的部分）。 */
 function onClearNearest() {
+  leaveReplay()
   service.clearPendingObstacles()
 }
 
 /** 重新开始：复位机器人但保留尾迹（V2.0）。 */
 function onRestart() {
   service.restart()
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
 }
 
 /**
@@ -1334,8 +1351,7 @@ function onLoadMap(loaded) {
   Object.assign(map, service.getMap())
   mapPresetKey.value = null
   service.reset(false)
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
   showLibrary.value = false
   fitMap()
   addToast('notice', '地图已载入')
@@ -1386,8 +1402,7 @@ function onDesignerSave({ name, map: designed }) {
   Object.assign(map, service.getMap())
   mapPresetKey.value = null
   service.reset(false)
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
   showDesigner.value = false
   fitMap()
   addToast('notice', `地图「${name}」已保存到地图库并载入`)
@@ -1409,8 +1424,7 @@ function onNewMapConfirm({ width, height }) {
   service.newMap(width, height)
   Object.assign(map, service.getMap())
   mapPresetKey.value = null
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
   blockedCell.value = null
   pendingCells.value = []
   fitMap()
@@ -1563,8 +1577,7 @@ function onSelectPreset(key) {
   // 服务层可能替换了内部地图对象，这里把新字段同步进响应式包装
   Object.assign(map, service.getMap())
   mapPresetKey.value = key
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
   fitMap()
 }
 
@@ -1587,8 +1600,7 @@ function onImportMap(imported) {
   service.updateMap(map)
   // 机器人可能停在障碍格上，统一复位到新地图起点
   service.reset()
-  snapshots.value = []
-  stopPlayback()
+  clearReplay()
   fitMap()
   addToast('notice', '地图导入成功，机器人已复位到起点')
 }
@@ -1661,8 +1673,16 @@ function onExportAlerts() {
   URL.revokeObjectURL(url)
 }
 
+function onSeekPlayback(index) {
+  if (snapshots.value.length === 0) return
+  playbackActive.value = true
+  playbackIndex.value = Math.min(Math.max(index, 0), snapshots.value.length - 1)
+  stopPlayback()
+}
+
 function startPlayback() {
   if (snapshots.value.length === 0) return
+  playbackActive.value = true
   playbackPlaying.value = true
   if (playbackTimer) clearInterval(playbackTimer)
   playbackTimer = setInterval(() => {
@@ -1681,6 +1701,31 @@ function stopPlayback() {
     playbackTimer = null
   }
 }
+
+/** 退出回放：地图回到实时画面，快照留着，随时可以再播。 */
+function leaveReplay() {
+  playbackActive.value = false
+  playbackIndex.value = 0
+  stopPlayback()
+}
+
+/** 收起回放面板：快照一起清掉，下次巡检完成后再出现。 */
+function clearReplay() {
+  leaveReplay()
+  snapshots.value = []
+}
+
+function onExitPlayback() {
+  clearReplay()
+}
+
+// 巡检跑起来（含定时任务、Agent 触发）就不再停在回放画面
+watch(
+  () => patrolStatus.value.running,
+  (running) => {
+    if (running) leaveReplay()
+  }
+)
 
 // --------------------------------------------------------------------------
 // Toast
@@ -1740,8 +1785,7 @@ function applyMapFrame(freshMap) {
   Object.assign(map, freshMap)
   mapPresetKey.value = service.getPresetKey ? service.getPresetKey() : null
   if (sizeChanged) {
-    snapshots.value = []
-    stopPlayback()
+    clearReplay()
     blockedCell.value = null
     pendingCells.value = []
     fitMap()

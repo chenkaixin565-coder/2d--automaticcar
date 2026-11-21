@@ -2,7 +2,16 @@
   <div v-if="snapshots.length > 0" class="p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 space-y-3">
     <div class="flex items-center justify-between">
       <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">路径回放</h2>
-      <span class="text-xs text-gray-500 dark:text-gray-400">{{ currentIndex + 1 }} / {{ snapshots.length }}</span>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-gray-500 dark:text-gray-400">{{ currentIndex + 1 }} / {{ snapshots.length }}</span>
+        <button
+          type="button"
+          class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          @click="emit('exit')"
+        >
+          退出回放
+        </button>
+      </div>
     </div>
     <div class="flex items-center gap-3">
       <button
@@ -54,7 +63,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['seek', 'play', 'pause'])
+const emit = defineEmits(['seek', 'play', 'pause', 'exit'])
 
 const currentTime = computed(() => {
   const snapshot = props.snapshots[props.currentIndex]
